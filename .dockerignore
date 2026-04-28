@@ -1,0 +1,39 @@
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.venv
+venv
+env
+.git
+.gitignore
+.github
+.idea
+.vscode
+*.egg-info
+dist
+build
+
+# Secrets - never bake into the image
+.env
+.env.local
+.env.*
+!.env.example
+
+# Exploration scripts
+explore*.py
+
+# Pipeline state (regenerated on run)
+data/scraper_state.json
+data/extractor_state.json
+data/embedder_state.json
+
+# Large, non-API data stays out of the runtime image; the API reads from Supabase.
+# If you WANT to ship snapshots with the image, comment the lines below.
+data/raw
+data/enhanced
+
+README.md
+*.md

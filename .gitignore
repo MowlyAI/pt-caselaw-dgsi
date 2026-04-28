@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Editors
+.vscode/
+.idea/
+
+# Secrets
+.env
+.env.local
+.env.*
+!.env.example
+
+# Data directory — large artifacts, never commit
+data/
+!data/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Exploration throwaway
+explore*.py
+
+# Local logs / nohup output
+nohup.out
+*.log
+/tmp/
