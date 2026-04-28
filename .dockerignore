@@ -25,15 +25,19 @@ build
 # Exploration scripts
 explore*.py
 
-# Pipeline state (regenerated on run)
-data/scraper_state.json
-data/extractor_state.json
-data/embedder_state.json
+# Data directory — the API reads from Supabase, never bake data into the image
+data/
 
-# Large, non-API data stays out of the runtime image; the API reads from Supabase.
-# If you WANT to ship snapshots with the image, comment the lines below.
-data/raw
-data/enhanced
+# Not needed in the runtime image (API-only deploy)
+scraper/
+embedder/
+extractor/
+scripts/
+tests/
+
+# Local logs / nohup output
+nohup.out
+*.log
 
 README.md
 *.md

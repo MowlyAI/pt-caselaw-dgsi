@@ -1,4 +1,4 @@
-# -------- Stage 1: build (deps + optional data concatenation) --------
+# -------- Stage 1: build dependencies --------
 FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -14,13 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install --prefix=/install -r requirements.txt
 
-# Optional: concatenate split JSONL shards (each <100MB) back into single files.
-# Any directory matching `data/**/chunk_*.jsonl` will be merged into `<dir>.jsonl`.
-# Safe no-op when no chunks exist (the API reads from Supabase at runtime).
-COPY scripts ./scripts
-COPY data ./data
-RUN python scripts/concat_chunks.py data || true
-
 
 # -------- Stage 2: runtime (slim image for Render) --------
 FROM python:3.12-slim
@@ -33,13 +26,9 @@ WORKDIR /app
 
 COPY --from=builder /install /usr/local
 
+# API-only runtime: the service reads from Supabase Postgres at request time,
+# so we ship no local data and no pipeline workers.
 COPY api ./api
-COPY scraper ./scraper
-COPY embedder ./embedder
-COPY extractor ./extractor
-COPY scripts ./scripts
-# Concatenated data is copied from the builder stage (if present)
-COPY --from=builder /build/data ./data
 
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
