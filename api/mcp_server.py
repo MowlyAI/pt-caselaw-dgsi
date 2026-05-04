@@ -1,13 +1,13 @@
 """MCP server for PT Caselaw DGSI — exposes search as MCP tools via fastmcp.
 
-Run standalone (stdio, for Claude Desktop / Claude Code):
+Run standalone (stdio, for Claude Desktop / Claude Code local):
     python -m api.mcp_server
 
-Run standalone (SSE on a separate port):
-    fastmcp run api/mcp_server.py --transport sse --port 8001
+Run standalone (HTTP on a separate port):
+    fastmcp run api/mcp_server.py --transport http --port 8001
 
 Run alongside the FastAPI app (shared db pool, single process):
-    uvicorn api.app:app        # MCP SSE endpoint at /mcp/sse
+    uvicorn api.app:app        # MCP endpoint at /mcp/
 """
 from __future__ import annotations
 
