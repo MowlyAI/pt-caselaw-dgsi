@@ -104,7 +104,7 @@ def _serialise(results: list[_m.SearchResult]) -> list[dict]:
 # Tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool
 async def search(
     q: str,
     limit: int = 10,
@@ -167,7 +167,7 @@ async def search(
     return _serialise(results)
 
 
-@mcp.tool()
+@mcp.tool
 async def get_document(doc_id: str) -> dict:
     """Fetch the full record for a single court decision by its doc_id.
 
@@ -187,7 +187,7 @@ async def get_document(doc_id: str) -> dict:
     return doc
 
 
-@mcp.tool()
+@mcp.tool
 async def get_filters() -> dict:
     """Discover available filter values for the search tool.
 
