@@ -984,28 +984,30 @@ _filters_cache: dict[str, tuple[float, dict]] = {}
 
 async def _compute_filters_payload(legal_domain_prefix: Optional[str],
                                    top_legal_domains: int) -> dict:
-    """Run the filter-discovery queries and shape the response."""
+    """Run the filter-discovery queries and shape the response.
+
+    NOTE: asyncpg does not allow concurrent queries on the same connection,
+    so we run sequentially within the acquired connection.
+    """
     async with db_pool.acquire() as conn:
-        court_rows, is_auj_rows, date_row, ld_total = await asyncio.gather(
-            conn.fetch(
-                "SELECT court_short AS value, count(*) AS count FROM documents "
-                " WHERE court_short IS NOT NULL "
-                " GROUP BY court_short ORDER BY count DESC"
-            ),
-            conn.fetch(
-                "SELECT is_auj AS value, count(*) AS count FROM documents "
-                " WHERE is_auj IS NOT NULL "
-                " GROUP BY is_auj ORDER BY value DESC"
-            ),
-            conn.fetchrow(
-                "SELECT min(decision_date) AS min, max(decision_date) AS max, "
-                "       count(decision_date) AS count "
-                "  FROM documents"
-            ),
-            conn.fetchval(
-                "SELECT count(distinct legal_domain) FROM documents "
-                " WHERE legal_domain IS NOT NULL"
-            ),
+        court_rows = await conn.fetch(
+            "SELECT court_short AS value, count(*) AS count FROM documents "
+            " WHERE court_short IS NOT NULL "
+            " GROUP BY court_short ORDER BY count DESC"
+        )
+        is_auj_rows = await conn.fetch(
+            "SELECT is_auj AS value, count(*) AS count FROM documents "
+            " WHERE is_auj IS NOT NULL "
+            " GROUP BY is_auj ORDER BY value DESC"
+        )
+        date_row = await conn.fetchrow(
+            "SELECT min(decision_date) AS min, max(decision_date) AS max, "
+            "       count(decision_date) AS count "
+            "  FROM documents"
+        )
+        ld_total = await conn.fetchval(
+            "SELECT count(distinct legal_domain) FROM documents "
+            " WHERE legal_domain IS NOT NULL"
         )
         if legal_domain_prefix:
             ld_rows = await conn.fetch(
@@ -1022,17 +1024,15 @@ async def _compute_filters_payload(legal_domain_prefix: Optional[str],
                 top_legal_domains,
             )
         # Metadata-derived enums. The jsonb GIN index helps with `?` lookups.
-        dt_rows, conf_rows = await asyncio.gather(
-            conn.fetch(
-                "SELECT metadata->>'decision_type' AS value, count(*) AS count "
-                "  FROM documents WHERE metadata ? 'decision_type' "
-                " GROUP BY metadata->>'decision_type' ORDER BY count DESC"
-            ),
-            conn.fetch(
-                "SELECT metadata->>'extraction_confidence' AS value, count(*) AS count "
-                "  FROM documents WHERE metadata ? 'extraction_confidence' "
-                " GROUP BY metadata->>'extraction_confidence' ORDER BY count DESC"
-            ),
+        dt_rows = await conn.fetch(
+            "SELECT metadata->>'decision_type' AS value, count(*) AS count "
+            "  FROM documents WHERE metadata ? 'decision_type' "
+            " GROUP BY metadata->>'decision_type' ORDER BY count DESC"
+        )
+        conf_rows = await conn.fetch(
+            "SELECT metadata->>'extraction_confidence' AS value, count(*) AS count "
+            "  FROM documents WHERE metadata ? 'extraction_confidence' "
+            " GROUP BY metadata->>'extraction_confidence' ORDER BY count DESC"
         )
     return {
         "court": [{"value": r["value"], "count": r["count"]} for r in court_rows],
