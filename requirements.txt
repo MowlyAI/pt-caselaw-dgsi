@@ -1,9 +1,6 @@
-# Web scraping
-aiohttp==3.9.5
-aiohttp-retry==2.8.3
-beautifulsoup4==4.12.3
-lxml==5.2.2
-chardet==5.2.0
+# ── API runtime (Docker image) ──────────────────────────────────────────────
+# Pipeline-only deps (supabase client, scraper libs, etc.) are NOT listed here;
+# install them separately for local pipeline work: pip install supabase aiohttp …
 
 # CLI & progress
 rich>=13.9.4
@@ -19,11 +16,8 @@ httpx>=0.28.1
 openai==1.30.1
 pydantic>=2.11.7
 
-# Database / vector search
-supabase==2.4.6
+# Database
 asyncpg==0.29.0
-hnswlib==0.8.0
-numpy==2.0.2
 
 # FastAPI
 fastapi>=0.111.0
