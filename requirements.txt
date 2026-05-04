@@ -9,7 +9,7 @@ click==8.1.7
 
 # Data
 ujson==5.10.0
-python-dotenv==1.0.1
+python-dotenv>=1.1.0
 
 # LLM & API
 httpx>=0.28.1
