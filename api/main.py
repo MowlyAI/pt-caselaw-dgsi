@@ -265,26 +265,23 @@ class SearchWeights(BaseModel):
     fts: float = Field(
         1.0, ge=0, le=10,
         description=(
-            "Weight for the Postgres full-text-search source. Set to 0 on "
-            "`/search` to make it semantic-only; ignored on `/search/semantic`."
+            "Weight for the Postgres full-text-search source. Set to 0 to "
+            "disable FTS and run a purely semantic search."
         ),
     )
 
 
 class SearchRequest(BaseModel):
-    """Request body shared by `POST /search`, `/search/semantic` and `/search/fts`.
+    """Request body for `POST /search` (hybrid search).
 
     **Query strings** — provide either a single shared `q` or separate
     `q_semantic` / `q_keywords`. Any side that is `null` falls back to `q`.
-    On `/search/semantic` only `q_semantic` (or `q`) is required;
-    on `/search/fts` only `q_keywords` (or `q`) is required.
     """
     q: Optional[str] = Field(
         None,
         description=(
             "Shared query string used for **both** the semantic and FTS sides "
-            "when the side-specific fields are not provided. Most callers "
-            "should send only this field."
+            "when the side-specific fields are not provided."
         ),
         examples=["responsabilidade civil extracontratual do Estado"],
     )
@@ -298,14 +295,14 @@ class SearchRequest(BaseModel):
         ),
         examples=["despedimento sem justa causa por uso indevido de email corporativo"],
     )
-    q_keywords: Optional[str] = Field(
+    q_keywords: Optional[list[str]] = Field(
         None,
         description=(
-            "Keyword query for full-text search. Supports "
-            "`websearch_to_tsquery` syntax: quoted `\"phrase\"`, `-excluded`, "
-            "`OR`. Whitespace acts as AND."
+            "List of keywords for full-text search. Each keyword is matched "
+            "with AND logic. Individual entries support `websearch_to_tsquery` "
+            "syntax: quoted `\"phrase\"`, `-excluded`, `OR`."
         ),
-        examples=["despedimento email corporativo"],
+        examples=[["despedimento", "email", "corporativo"]],
     )
     limit: int = Field(
         20, ge=1, le=100,
@@ -361,7 +358,7 @@ HYBRID_EXAMPLES: dict[str, dict[str, Any]] = {
             "q_semantic":
                 "responsabilidade civil extracontratual do Estado "
                 "por funcionamento anormal da justiça",
-            "q_keywords": "responsabilidade civil Estado",
+            "q_keywords": ["responsabilidade", "civil", "Estado"],
             "limit": 10,
             "filters": {
                 "court": ["STJ"],
@@ -384,44 +381,6 @@ HYBRID_EXAMPLES: dict[str, dict[str, Any]] = {
                 "embedding_ratio": 1.5,
                 "fts": 0,
             },
-        },
-    },
-}
-
-SEMANTIC_EXAMPLES: dict[str, dict[str, Any]] = {
-    "simple": {
-        "summary": "Plain semantic search",
-        "value": {"q": "acidente de trabalho nexo de causalidade", "limit": 10},
-    },
-    "ratio_only": {
-        "summary": "Search only the legal-reasoning column",
-        "description": "Useful for purely doctrinal queries.",
-        "value": {
-            "q": "ónus da prova em matéria de cláusulas contratuais gerais",
-            "limit": 10,
-            "weights": {
-                "embedding": 0,
-                "embedding_context": 0,
-                "embedding_ratio": 1.0,
-            },
-        },
-    },
-}
-
-FTS_EXAMPLES: dict[str, dict[str, Any]] = {
-    "simple": {
-        "summary": "Plain keyword search",
-        "value": {"q": "despedimento sem justa causa", "limit": 10},
-    },
-    "phrase_and_exclusion": {
-        "summary": "Quoted phrase with token exclusion",
-        "description":
-            "`websearch_to_tsquery` syntax: `\"phrase\"` for adjacency, "
-            "`-token` to exclude.",
-        "value": {
-            "q_keywords": "\"acidente de viação\" -trabalho",
-            "limit": 10,
-            "filters": {"court": ["STJ", "TRP"]},
         },
     },
 }
@@ -782,7 +741,10 @@ def _resolve_queries(req: SearchRequest, need_sem: bool, need_fts: bool
     """Pick the effective semantic and keyword strings, falling back to `q`.
     Raises 400 if any required slot ends up empty."""
     sem = req.q_semantic if req.q_semantic is not None else req.q
-    kw = req.q_keywords if req.q_keywords is not None else req.q
+    if req.q_keywords is not None:
+        kw = " ".join(req.q_keywords)
+    else:
+        kw = req.q
     if need_sem and not sem:
         raise HTTPException(400, "Provide `q` or `q_semantic` for vector search")
     if need_fts and not kw:
@@ -890,92 +852,6 @@ async def search_hybrid(
                           count=len(results), sources_used=sources_used,
                           mode="hybrid", filters=req.filters, results=results)
 
-
-@app.post(
-    "/search/semantic",
-    response_model=SearchResponse,
-    tags=["search"],
-    summary="Semantic-only search (3 vector columns, no FTS)",
-    description=(
-        "Same as `POST /search` but with full-text search **disabled**. "
-        "The `weights.fts` field is ignored. Use this when the query is "
-        "purely conceptual / paraphrased and exact-token matching would add "
-        "noise (e.g. broad doctrinal questions).\n\n"
-        "Only `q` or `q_semantic` is required; `q_keywords` is ignored. "
-        "Disable individual vector columns by setting their weight to 0 — "
-        "for example, `{\"weights\": {\"embedding_ratio\": 0}}` to ignore "
-        "the legal-reasoning column."
-    ),
-    responses={
-        400: {"description": "Missing semantic query, or all vector weights are 0."},
-        502: {"description": "Embedding provider returned a non-200 response."},
-    },
-)
-async def search_semantic(
-    req: SearchRequest = Body(..., openapi_examples=SEMANTIC_EXAMPLES),
-):
-    """Semantic-only search across all 3 vector columns in parallel.
-    See the OpenAPI description."""
-    vec_fields = _enabled_vector_fields(req.weights)
-    if not vec_fields:
-        raise HTTPException(400, "All vector weights are 0; nothing to search")
-    sem_q, _ = _resolve_queries(req, need_sem=True, need_fts=False)
-    over = req.limit * req.overfetch
-
-    per_source = await _search_vectors(sem_q, vec_fields, over, req.filters)
-    weights = {f: getattr(req.weights, f) for f in vec_fields}
-    merged, ranks = _rrf_merge_multi(per_source, weights, k=req.rrf_k)
-    docs = await _fetch_docs([d for d, _ in merged[:req.limit]])
-    # Single-source results don't really have a "hybrid" score, but multiple
-    # vector columns are still being fused — keep it for transparency.
-    include_hybrid = len(vec_fields) > 1
-    results = _build_results(merged, docs, per_source, ranks,
-                             req.limit, include_hybrid=include_hybrid)
-    return SearchResponse(query_semantic=sem_q, count=len(results),
-                          sources_used=vec_fields, mode="semantic",
-                          filters=req.filters, results=results)
-
-
-@app.post(
-    "/search/fts",
-    response_model=SearchResponse,
-    tags=["search"],
-    summary="Full-text-only search (Postgres GIN, Portuguese + unaccent)",
-    description=(
-        "Pure keyword search via Postgres `to_tsvector('portuguese', …)` + "
-        "`unaccent`. Supports the standard `websearch_to_tsquery` syntax:\n\n"
-        "* whitespace = AND  (`despedimento email`)\n"
-        "* `OR`              (`despedimento OR demissão`)\n"
-        "* `\"phrase\"`     for adjacency\n"
-        "* `-token`        to exclude a token\n\n"
-        "Only `q` or `q_keywords` is required; `q_semantic` and the vector "
-        "weights are ignored. No embedding API call is performed, so this "
-        "is the cheapest and lowest-latency endpoint — ideal for exact "
-        "lookups (process numbers, judge names, statute references)."
-    ),
-    responses={
-        400: {"description": "Missing keyword query, or `weights.fts` is 0."},
-    },
-)
-async def search_fts(
-    req: SearchRequest = Body(..., openapi_examples=FTS_EXAMPLES),
-):
-    """Full-text-only search via the GIN `fts` index. See the OpenAPI description."""
-    if req.weights.fts <= 0:
-        raise HTTPException(400, "weights.fts is 0; nothing to search")
-    _, kw_q = _resolve_queries(req, need_sem=False, need_fts=True)
-    over = req.limit * req.overfetch
-
-    fts_hits = await _search_fts(kw_q, over, req.filters)
-    per_source = {"fts": fts_hits}
-    weights = {"fts": req.weights.fts}
-    merged, ranks = _rrf_merge_multi(per_source, weights, k=req.rrf_k)
-    docs = await _fetch_docs([d for d, _ in merged[:req.limit]])
-    results = _build_results(merged, docs, per_source, ranks,
-                             req.limit, include_hybrid=False)
-    return SearchResponse(query_keywords=kw_q, count=len(results),
-                          sources_used=["fts"], mode="fts",
-                          filters=req.filters, results=results)
 
 
 FILTERS_CACHE_TTL = int(os.getenv("FILTERS_CACHE_TTL", "3600"))  # seconds
@@ -1121,6 +997,9 @@ async def get_filters(
         "ratio decidendi, amounts, timeline events, …; same shape as "
         "`extractor.schema.ExtractedInfo`). Returns **404** if the id is "
         "unknown.\n\n"
+        "Set `include_full_text=true` to also receive the `full_text` field "
+        "with the complete integral text of the decision as scraped from DGSI. "
+        "Omitted by default because it can be several hundred kilobytes.\n\n"
         "Typical usage: after a `/search` call, pick the `doc_id` of an "
         "interesting result and hydrate it here for full context."
     ),
@@ -1129,13 +1008,28 @@ async def get_filters(
     },
 )
 async def get_document(
-    doc_id: str = FastAPIPath(  # noqa: F821 — imported just below
+    doc_id: str = FastAPIPath(
         ...,
         description="Stable opaque document identifier returned by any /search endpoint.",
         examples=["3a8c0d2e9f1b4a7e8d6c5b4a3f2e1d0c"],
+    ),
+    include_full_text: bool = Query(
+        False,
+        description=(
+            "When `true`, the response includes a `full_text` field with the "
+            "complete integral text of the decision as scraped from DGSI. "
+            "Omitted by default to keep responses compact."
+        ),
     ),
 ):
     docs = await _fetch_docs([doc_id])
     if doc_id not in docs:
         raise HTTPException(404, "Document not found")
-    return docs[doc_id]
+    doc = docs[doc_id]
+    if include_full_text:
+        async with db_pool.acquire() as conn:
+            full_text = await conn.fetchval(
+                "SELECT full_text FROM documents WHERE doc_id = $1", doc_id
+            )
+        doc["full_text"] = full_text
+    return doc

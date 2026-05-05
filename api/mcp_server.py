@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import date
-from typing import Literal, Optional
+from typing import Optional
 
 import asyncpg
 import httpx
@@ -106,9 +106,9 @@ def _serialise(results: list[_m.SearchResult]) -> list[dict]:
 
 @mcp.tool
 async def search(
-    q: str,
+    q_semantic: str,
+    q_keywords: Optional[list[str]] = None,
     limit: int = 10,
-    mode: Literal["hybrid", "semantic", "fts"] = "hybrid",
     court: Optional[list[str]] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -116,17 +116,15 @@ async def search(
     is_auj: Optional[bool] = None,
     decision_type: Optional[list[str]] = None,
 ) -> list[dict]:
-    """Search Portuguese court decisions (DGSI).
+    """Search Portuguese court decisions (DGSI) using hybrid search (3 vector columns + FTS fused with RRF).
 
     Args:
-        q: Query string. Natural language for hybrid/semantic (e.g. "despedimento
-           sem justa causa por uso indevido de email"). Keywords with optional
-           operators for fts (e.g. '"acidente de viação" -trabalho').
+        q_semantic: Natural-language query for vector search (e.g. "despedimento
+                    sem justa causa por uso indevido de email corporativo").
+        q_keywords: Optional list of keywords for full-text search (e.g.
+                    ["despedimento", "email", "corporativo"]). When omitted,
+                    `q_semantic` is also used for FTS.
         limit: Max results to return (1–50, default 10).
-        mode: Search strategy — "hybrid" (3 vector columns + FTS fused with RRF,
-              recommended), "semantic" (vectors only, good for conceptual queries),
-              "fts" (keyword-only, no embedding call, lowest latency, good for exact
-              terms, process numbers, statute references).
         court: Restrict to one or more court codes e.g. ["STJ", "TRP"].
                Call get_filters to see all available codes with document counts.
         date_from: Earliest decision date, ISO format YYYY-MM-DD (inclusive).
@@ -141,34 +139,26 @@ async def search(
     filters = _make_filters(court, legal_domain, is_auj, date_from, date_to, decision_type)
     overfetch = limit * 4
     weights_obj = _m.SearchWeights()
+    vec_fields = _m._enabled_vector_fields(weights_obj)
+    kw_q = " ".join(q_keywords) if q_keywords else q_semantic
 
-    if mode == "fts":
-        per_source: dict[str, list] = {"fts": await _m._search_fts(q, overfetch, filters)}
-        weight_map: dict[str, float] = {"fts": 1.0}
-    elif mode == "semantic":
-        vec_fields = _m._enabled_vector_fields(weights_obj)
-        per_source = await _m._search_vectors(q, vec_fields, overfetch, filters)
-        weight_map = {f: 1.0 for f in vec_fields}
-    else:  # hybrid
-        vec_fields = _m._enabled_vector_fields(weights_obj)
-        vec_res, fts_hits = await asyncio.gather(
-            _m._search_vectors(q, vec_fields, overfetch, filters),
-            _m._search_fts(q, overfetch, filters),
-        )
-        per_source = {**vec_res, "fts": fts_hits}
-        weight_map = {f: 1.0 for f in [*vec_fields, "fts"]}
+    vec_res, fts_hits = await asyncio.gather(
+        _m._search_vectors(q_semantic, vec_fields, overfetch, filters),
+        _m._search_fts(kw_q, overfetch, filters),
+    )
+    per_source: dict[str, list] = {**vec_res, "fts": fts_hits}
+    weight_map: dict[str, float] = {f: 1.0 for f in [*vec_fields, "fts"]}
 
     merged, ranks = _m._rrf_merge_multi(per_source, weight_map)
     docs = await _m._fetch_docs([doc_id for doc_id, _ in merged[:limit]])
     results = _m._build_results(
-        merged, docs, per_source, ranks, limit,
-        include_hybrid=(mode == "hybrid"),
+        merged, docs, per_source, ranks, limit, include_hybrid=True,
     )
     return _serialise(results)
 
 
 @mcp.tool
-async def get_document(doc_id: str) -> dict:
+async def get_document(doc_id: str, include_full_text: bool = False) -> dict:
     """Fetch the full record for a single court decision by its doc_id.
 
     Returns the complete metadata blob: parties, legal citations, ratio decidendi,
@@ -177,6 +167,9 @@ async def get_document(doc_id: str) -> dict:
 
     Args:
         doc_id: Stable document identifier returned by search results.
+        include_full_text: When True, the response includes a `full_text` field
+            with the complete integral text of the decision as scraped from DGSI.
+            Omitted by default to keep responses compact.
     """
     docs = await _m._fetch_docs([doc_id])
     if doc_id not in docs:
@@ -184,6 +177,12 @@ async def get_document(doc_id: str) -> dict:
     doc = docs[doc_id]
     if isinstance(doc.get("decision_date"), date):
         doc["decision_date"] = doc["decision_date"].isoformat()
+    if include_full_text:
+        async with _m.db_pool.acquire() as conn:
+            full_text = await conn.fetchval(
+                "SELECT full_text FROM documents WHERE doc_id = $1", doc_id
+            )
+        doc["full_text"] = full_text
     return doc
 
 
