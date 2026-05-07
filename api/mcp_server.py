@@ -107,7 +107,7 @@ def _serialise(results: list[_m.SearchResult]) -> list[dict]:
 @mcp.tool
 async def search(
     q_semantic: str,
-    q_keywords: Optional[list[str]] = None,
+    q_keywords: list[str],
     limit: int = 10,
     court: Optional[list[str]] = None,
     date_from: Optional[str] = None,
@@ -121,9 +121,9 @@ async def search(
     Args:
         q_semantic: Natural-language query for vector search (e.g. "despedimento
                     sem justa causa por uso indevido de email corporativo").
-        q_keywords: Optional list of keywords for full-text search (e.g.
-                    ["despedimento", "email", "corporativo"]). When omitted,
-                    `q_semantic` is also used for FTS.
+        q_keywords: List of keywords for full-text search (e.g.
+                    ["despedimento", "email", "corporativo"]). Supports
+                    `websearch_to_tsquery` syntax: quoted "phrase", -excluded, OR.
         limit: Max results to return (1–50, default 10).
         court: Restrict to one or more court codes e.g. ["STJ", "TRP"].
                Call get_filters to see all available codes with document counts.
@@ -140,7 +140,7 @@ async def search(
     overfetch = limit * 4
     weights_obj = _m.SearchWeights()
     vec_fields = _m._enabled_vector_fields(weights_obj)
-    kw_q = " ".join(q_keywords) if q_keywords else q_semantic
+    kw_q = " ".join(q_keywords)
 
     vec_res, fts_hits = await asyncio.gather(
         _m._search_vectors(q_semantic, vec_fields, overfetch, filters),

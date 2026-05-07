@@ -274,33 +274,27 @@ class SearchWeights(BaseModel):
 class SearchRequest(BaseModel):
     """Request body for `POST /search` (hybrid search).
 
-    **Query strings** — provide either a single shared `q` or separate
-    `q_semantic` / `q_keywords`. Any side that is `null` falls back to `q`.
+    **Query strings** — provide `q_semantic` for vector search and/or
+    `q_keywords` for full-text search. Each is used exclusively for its
+    respective source; there is no shared fallback between the two.
     """
-    q: Optional[str] = Field(
-        None,
-        description=(
-            "Shared query string used for **both** the semantic and FTS sides "
-            "when the side-specific fields are not provided."
-        ),
-        examples=["responsabilidade civil extracontratual do Estado"],
-    )
     q_semantic: Optional[str] = Field(
         None,
         description=(
-            "Natural-language query embedded for vector search. Use this when "
-            "the semantic intent differs from the keywords you'd like FTS to "
-            "match (e.g. paraphrase the question here, list legal terms in "
-            "`q_keywords`)."
+            "Natural-language query embedded for vector search. Required when "
+            "any vector weight is non-zero. Phrase the semantic intent here "
+            "(e.g. a question or paraphrase); list matching terms in "
+            "`q_keywords` for the FTS side."
         ),
         examples=["despedimento sem justa causa por uso indevido de email corporativo"],
     )
     q_keywords: Optional[list[str]] = Field(
         None,
         description=(
-            "List of keywords for full-text search. Each keyword is matched "
-            "with AND logic. Individual entries support `websearch_to_tsquery` "
-            "syntax: quoted `\"phrase\"`, `-excluded`, `OR`."
+            "List of keywords for full-text search. Required when `weights.fts` "
+            "is non-zero. Each keyword is matched with AND logic; individual "
+            "entries support `websearch_to_tsquery` syntax: quoted `\"phrase\"`, "
+            "`-excluded`, `OR`."
         ),
         examples=[["despedimento", "email", "corporativo"]],
     )
@@ -343,17 +337,22 @@ class SearchRequest(BaseModel):
 # Reusable, labelled body examples surfaced in Swagger UI's "Try it out" panel.
 # Keys are the dropdown labels.
 HYBRID_EXAMPLES: dict[str, dict[str, Any]] = {
-    "simple": {
-        "summary": "Simple hybrid search (single shared string)",
-        "description": "Send only `q` and the same string is used for both vectors and FTS.",
-        "value": {"q": "responsabilidade civil do Estado", "limit": 10},
-    },
-    "dual_string_filtered": {
-        "summary": "Dual-string + STJ AUJs since 2020",
+    "hybrid": {
+        "summary": "Hybrid search (semantic + keyword)",
         "description":
-            "Use `q_semantic` for the natural-language intent and "
-            "`q_keywords` for the terms FTS should match. Restrict to "
-            "binding precedent from the STJ in the last few years.",
+            "Provide `q_semantic` for the natural-language intent and "
+            "`q_keywords` for the terms FTS should match.",
+        "value": {
+            "q_semantic": "responsabilidade civil extracontratual do Estado",
+            "q_keywords": ["responsabilidade", "civil", "Estado"],
+            "limit": 10,
+        },
+    },
+    "hybrid_filtered": {
+        "summary": "Hybrid search + STJ AUJs since 2020",
+        "description":
+            "Same dual-query approach restricted to binding precedent "
+            "from the STJ in the last few years.",
         "value": {
             "q_semantic":
                 "responsabilidade civil extracontratual do Estado "
@@ -373,7 +372,7 @@ HYBRID_EXAMPLES: dict[str, dict[str, Any]] = {
             "Disable FTS by zeroing its weight and boost the legal-reasoning "
             "column for a doctrinal query.",
         "value": {
-            "q": "interpretação restritiva do conceito de consumidor",
+            "q_semantic": "interpretação restritiva do conceito de consumidor",
             "limit": 20,
             "weights": {
                 "embedding": 1.0,
@@ -738,17 +737,14 @@ async def stats():
 
 def _resolve_queries(req: SearchRequest, need_sem: bool, need_fts: bool
                      ) -> tuple[Optional[str], Optional[str]]:
-    """Pick the effective semantic and keyword strings, falling back to `q`.
-    Raises 400 if any required slot ends up empty."""
-    sem = req.q_semantic if req.q_semantic is not None else req.q
-    if req.q_keywords is not None:
-        kw = " ".join(req.q_keywords)
-    else:
-        kw = req.q
+    """Extract the semantic and keyword query strings from the request.
+    Raises 400 if a required slot is missing."""
+    sem = req.q_semantic
+    kw = " ".join(req.q_keywords) if req.q_keywords is not None else None
     if need_sem and not sem:
-        raise HTTPException(400, "Provide `q` or `q_semantic` for vector search")
+        raise HTTPException(400, "Provide `q_semantic` for vector search")
     if need_fts and not kw:
-        raise HTTPException(400, "Provide `q` or `q_keywords` for keyword search")
+        raise HTTPException(400, "Provide `q_keywords` for keyword search")
     return sem, kw
 
 
