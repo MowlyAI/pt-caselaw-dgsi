@@ -162,8 +162,8 @@ ISO 8601 (`YYYY-MM-DD`) is the recommended format; the others are accepted
 to accommodate data from Portuguese legal databases and spreadsheets that
 commonly use day-first or slash-separated dates.
 
-See the `Filters` schema for every supported field;
-`GET /filters` returns the actual values present in the corpus.
+See the `Filters` schema for every supported field.
+`GET /filters` returns the available court codes and the corpus date range.
 
 ## Tuning
 
@@ -1027,135 +1027,65 @@ async def search_hybrid(
 
 
 FILTERS_CACHE_TTL = int(os.getenv("FILTERS_CACHE_TTL", "3600"))  # seconds
-_filters_cache: dict[str, tuple[float, dict]] = {}
+_filters_cache: Optional[tuple[float, dict]] = None
 
 
-async def _compute_filters_payload(legal_domain_prefix: Optional[str],
-                                   top_legal_domains: int) -> dict:
-    """Run the filter-discovery queries and shape the response.
-
-    NOTE: asyncpg does not allow concurrent queries on the same connection,
-    so we run sequentially within the acquired connection.
-    """
+async def _compute_filters_payload() -> dict:
     async with db_pool.acquire() as conn:
         court_rows = await conn.fetch(
             "SELECT court_short AS value, count(*) AS count FROM documents "
             " WHERE court_short IS NOT NULL "
             " GROUP BY court_short ORDER BY count DESC"
         )
+        date_row = await conn.fetchrow(
+            "SELECT min(decision_date) AS min, max(decision_date) AS max "
+            "  FROM documents"
+        )
         is_auj_rows = await conn.fetch(
             "SELECT is_auj AS value, count(*) AS count FROM documents "
             " WHERE is_auj IS NOT NULL "
             " GROUP BY is_auj ORDER BY value DESC"
         )
-        date_row = await conn.fetchrow(
-            "SELECT min(decision_date) AS min, max(decision_date) AS max, "
-            "       count(decision_date) AS count "
-            "  FROM documents"
-        )
-        ld_total = await conn.fetchval(
-            "SELECT count(distinct legal_domain) FROM documents "
-            " WHERE legal_domain IS NOT NULL"
-        )
-        if legal_domain_prefix:
-            ld_rows = await conn.fetch(
-                "SELECT legal_domain AS value, count(*) AS count FROM documents "
-                " WHERE legal_domain ILIKE $1 "
-                " GROUP BY legal_domain ORDER BY count DESC LIMIT $2",
-                f"%{legal_domain_prefix}%", top_legal_domains,
-            )
-        else:
-            ld_rows = await conn.fetch(
-                "SELECT legal_domain AS value, count(*) AS count FROM documents "
-                " WHERE legal_domain IS NOT NULL "
-                " GROUP BY legal_domain ORDER BY count DESC LIMIT $1",
-                top_legal_domains,
-            )
-        # Metadata-derived enums. The jsonb GIN index helps with `?` lookups.
-        dt_rows = await conn.fetch(
-            "SELECT metadata->>'decision_type' AS value, count(*) AS count "
-            "  FROM documents WHERE metadata ? 'decision_type' "
-            " GROUP BY metadata->>'decision_type' ORDER BY count DESC"
-        )
-        conf_rows = await conn.fetch(
-            "SELECT metadata->>'extraction_confidence' AS value, count(*) AS count "
-            "  FROM documents WHERE metadata ? 'extraction_confidence' "
-            " GROUP BY metadata->>'extraction_confidence' ORDER BY count DESC"
-        )
     return {
-        "court": [{"value": r["value"], "count": r["count"]} for r in court_rows],
-        "is_auj": [{"value": r["value"], "count": r["count"]} for r in is_auj_rows],
+        "courts": [{"value": r["value"], "count": r["count"]} for r in court_rows],
         "decision_date": {
             "min": date_row["min"].isoformat() if date_row["min"] else None,
             "max": date_row["max"].isoformat() if date_row["max"] else None,
-            "count": date_row["count"],
         },
-        "legal_domain": {
-            "distinct_count": ld_total,
-            "top": [{"value": r["value"], "count": r["count"]} for r in ld_rows],
-            "note": "High-cardinality field; use `legal_domain_prefix` to autocomplete.",
-        },
-        "decision_type": [{"value": r["value"], "count": r["count"]} for r in dt_rows],
-        "extraction_confidence": [
-            {"value": r["value"], "count": r["count"]} for r in conf_rows
-        ],
+        "is_auj": [{"value": r["value"], "count": r["count"]} for r in is_auj_rows],
     }
 
 
 @app.get(
     "/filters",
     tags=["info"],
-    summary="Discover supported filter fields and their available values",
+    summary="Discover available courts and date range for search filters",
     description=(
-        "Returns, for each field accepted by the `Filters` object on the "
-        "search endpoints:\n\n"
-        "* `court` — every `court_short` present in the corpus, with counts.\n"
-        "* `is_auj` — distribution of true/false.\n"
-        "* `decision_date` — `min` / `max` / `count`.\n"
-        "* `legal_domain` — `distinct_count` and the top-N most frequent "
-        "values. This field has 6000+ unique values, so use the "
-        "`legal_domain_prefix` query parameter to autocomplete.\n"
-        "* `decision_type`, `extraction_confidence` — full enumerations.\n\n"
-        "**Caching** — the heavy aggregations are cached in-memory for "
-        "`FILTERS_CACHE_TTL` seconds (default 3600). The response always "
-        "echoes `cached` (bool) and `cache_age_seconds`. Pass `refresh=true` "
-        "to bypass the cache.\n\n"
-        "**Recommended workflow** — call this endpoint once at the start of "
-        "an agent session to ground every later `filters` you send, then "
-        "send only values that appear here."
+        "Returns the values you can pass to the `courts`, `from_date`/`to_date`, "
+        "and `is_auj` filter fields on `POST /search`:\n\n"
+        "* `courts` — every `court_short` code present in the corpus with "
+        "document counts. Pass these directly as `courts: [\"STJ\", \"TRP\"]`.\n"
+        "* `decision_date` — `min` and `max` dates in the corpus, useful for "
+        "bounding `from_date` / `to_date`.\n"
+        "* `is_auj` — count of binding-precedent (AUJ) decisions vs regular ones.\n\n"
+        "**Caching** — results are cached in-memory for `FILTERS_CACHE_TTL` "
+        "seconds (default 3600). The response echoes `cached` and "
+        "`cache_age_seconds`. Pass `refresh=true` to force a recompute."
     ),
 )
 async def get_filters(
-    legal_domain_prefix: Optional[str] = Query(
-        None,
-        description=(
-            "Case-insensitive substring used to filter the `legal_domain` "
-            "enumeration before truncating to `top_legal_domains`. Useful "
-            "for autocomplete-style discovery."
-        ),
-        examples=["insolvencia"],
-    ),
-    top_legal_domains: int = Query(
-        50, ge=1, le=500,
-        description=(
-            "How many `legal_domain` values to return (most frequent first). "
-            "Capped at 500 because the field is high-cardinality."
-        ),
-    ),
     refresh: bool = Query(
         False,
-        description="Bypass the in-memory cache and recompute the aggregations.",
+        description="Bypass the in-memory cache and recompute from the database.",
     ),
 ):
-    cache_key = f"{legal_domain_prefix or ''}|{top_legal_domains}"
+    global _filters_cache
     now = time.time()
-    if not refresh:
-        cached = _filters_cache.get(cache_key)
-        if cached and (now - cached[0]) < FILTERS_CACHE_TTL:
-            return {**cached[1], "cached": True,
-                    "cache_age_seconds": int(now - cached[0])}
-    payload = await _compute_filters_payload(legal_domain_prefix, top_legal_domains)
-    _filters_cache[cache_key] = (now, payload)
+    if not refresh and _filters_cache and (now - _filters_cache[0]) < FILTERS_CACHE_TTL:
+        return {**_filters_cache[1], "cached": True,
+                "cache_age_seconds": int(now - _filters_cache[0])}
+    payload = await _compute_filters_payload()
+    _filters_cache = (now, payload)
     return {**payload, "cached": False, "cache_age_seconds": 0}
 
 

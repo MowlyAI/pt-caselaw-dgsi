@@ -188,10 +188,15 @@ async def get_document(doc_id: str, include_full_text: bool = False) -> dict:
 
 @mcp.tool
 async def get_filters() -> dict:
-    """Discover available filter values for the search tool.
+    """Discover available courts and the corpus date range for use as search filters.
 
-    Returns every court code with document counts, the overall date range,
-    the 50 most common legal domains, decision types, and extraction confidence
-    levels. Call once at the start of a session to ground your filter choices.
+    Returns:
+        courts: list of {value, count} — every court_short code with document counts.
+                Pass these as the `court` filter in search (e.g. ["STJ", "TRP"]).
+        decision_date: {min, max} — earliest and latest decision dates in the corpus.
+                       Use as bounds for date_from / date_to in search.
+        is_auj: list of {value, count} — how many decisions are binding precedents.
+
+    Call once at the start of a session to ground filter choices.
     """
-    return await _m._compute_filters_payload(None, 50)
+    return await _m._compute_filters_payload()
