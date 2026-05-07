@@ -17,7 +17,7 @@ import asyncpg
 import httpx
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 load_dotenv(".env.local")
 
@@ -130,8 +130,39 @@ If you only have one string, send it as `q` and both sides will use it.
 
 ## Filters
 
-All search endpoints accept the same `filters` object. It is composable
-(AND across fields). See the `Filters` schema for every supported field;
+All search endpoints accept the same `filters` object (AND across fields).
+For convenience, the four most common filters can also be passed as
+top-level fields directly on the request body — no nesting required:
+
+| Top-level field | Equivalent `filters` field | Type |
+|-----------------|---------------------------|------|
+| `courts`        | `filters.court`            | `list[str]` — e.g. `["STJ", "TRP"]` |
+| `from_date`     | `filters.date_from`        | date string (see formats below) |
+| `to_date`       | `filters.date_to`          | date string (see formats below) |
+| `is_auj`        | `filters.is_auj`           | `bool` |
+
+When a top-level field and its `filters` counterpart are both present,
+the top-level field wins.
+
+### Date formats
+
+Date fields (`from_date`, `to_date`, `filters.date_from`, `filters.date_to`)
+accept any of the following formats — the API normalises them automatically:
+
+| Format         | Example        |
+|----------------|----------------|
+| `YYYY-MM-DD`   | `2024-01-31`   |
+| `YYYY/MM/DD`   | `2024/01/31`   |
+| `YYYY.MM.DD`   | `2024.01.31`   |
+| `DD-MM-YYYY`   | `31-01-2024`   |
+| `DD/MM/YYYY`   | `31/01/2024`   |
+| `DD.MM.YYYY`   | `31.01.2024`   |
+
+ISO 8601 (`YYYY-MM-DD`) is the recommended format; the others are accepted
+to accommodate data from Portuguese legal databases and spreadsheets that
+commonly use day-first or slash-separated dates.
+
+See the `Filters` schema for every supported field;
 `GET /filters` returns the actual values present in the corpus.
 
 ## Tuning
@@ -174,6 +205,46 @@ app = FastAPI(
 )
 
 
+_DATE_FORMATS = (
+    "%Y-%m-%d",   # 2024-01-31  (ISO — checked first)
+    "%Y/%m/%d",   # 2024/01/31
+    "%Y.%m.%d",   # 2024.01.31
+    "%d-%m-%Y",   # 31-01-2024
+    "%d/%m/%Y",   # 31/01/2024
+    "%d.%m.%Y",   # 31.01.2024
+)
+
+
+def _parse_flexible_date(v: object) -> object:
+    """Coerce a date-like string into a ``datetime.date``.
+
+    Accepts ISO 8601 (``YYYY-MM-DD``) and the common Portuguese / European
+    variants that use ``/`` or ``.`` as separators, or day-first order:
+
+    * ``YYYY-MM-DD``, ``YYYY/MM/DD``, ``YYYY.MM.DD``
+    * ``DD-MM-YYYY``, ``DD/MM/YYYY``, ``DD.MM.YYYY``
+
+    Already-parsed ``date`` objects are passed through unchanged.
+    Raises ``ValueError`` on unrecognised input so Pydantic surfaces a clear
+    422 validation error to the caller.
+    """
+    if v is None or isinstance(v, date):
+        return v
+    if not isinstance(v, str):
+        return v  # let Pydantic handle non-string oddities
+    s = v.strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            from datetime import datetime
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    accepted = ", ".join(f"``{f}``" for f in ("YYYY-MM-DD", "YYYY/MM/DD", "DD-MM-YYYY", "DD/MM/YYYY"))
+    raise ValueError(
+        f"Unrecognised date format {s!r}. Accepted formats: {accepted}"
+    )
+
+
 class Filters(BaseModel):
     """Composable filters applied to every search endpoint (combined with AND).
 
@@ -209,12 +280,20 @@ class Filters(BaseModel):
     )
     date_from: Optional[date] = Field(
         None,
-        description="Inclusive lower bound on `decision_date` (ISO `YYYY-MM-DD`).",
+        description=(
+            "Inclusive lower bound on `decision_date`. "
+            "Accepts `YYYY-MM-DD` (ISO), `YYYY/MM/DD`, `YYYY.MM.DD`, "
+            "`DD-MM-YYYY`, `DD/MM/YYYY`, or `DD.MM.YYYY`."
+        ),
         examples=["2020-01-01"],
     )
     date_to: Optional[date] = Field(
         None,
-        description="Inclusive upper bound on `decision_date` (ISO `YYYY-MM-DD`).",
+        description=(
+            "Inclusive upper bound on `decision_date`. "
+            "Accepts `YYYY-MM-DD` (ISO), `YYYY/MM/DD`, `YYYY.MM.DD`, "
+            "`DD-MM-YYYY`, `DD/MM/YYYY`, or `DD.MM.YYYY`."
+        ),
         examples=["2024-12-31"],
     )
     decision_type: Optional[list[str]] = Field(
@@ -234,6 +313,11 @@ class Filters(BaseModel):
         ),
         examples=[["high", "medium"]],
     )
+
+    @field_validator("date_from", "date_to", mode="before")
+    @classmethod
+    def _coerce_date(cls, v: object) -> object:
+        return _parse_flexible_date(v)
 
 
 class SearchWeights(BaseModel):
@@ -277,6 +361,11 @@ class SearchRequest(BaseModel):
     **Query strings** — provide `q_semantic` for vector search and/or
     `q_keywords` for full-text search. Each is used exclusively for its
     respective source; there is no shared fallback between the two.
+
+    **Filters** — common filters can be provided as top-level fields
+    (`courts`, `from_date`, `to_date`, `is_auj`) for convenience, or as a
+    nested `filters` object. Top-level fields take precedence over the
+    corresponding fields inside `filters` when both are supplied.
     """
     q_semantic: Optional[str] = Field(
         None,
@@ -329,9 +418,77 @@ class SearchRequest(BaseModel):
         None,
         description=(
             "Optional structured filters (court, date range, AUJ-only, …). "
-            "See the `Filters` schema or call `GET /filters` for valid values."
+            "See the `Filters` schema or call `GET /filters` for valid values. "
+            "Top-level shorthand fields (`courts`, `from_date`, `to_date`, "
+            "`is_auj`) override the corresponding fields here when both are set."
         ),
     )
+    # Convenience top-level filter shorthands
+    courts: Optional[list[str]] = Field(
+        None,
+        description=(
+            "Shorthand for `filters.court`. Restrict to one or more courts "
+            "using `court_short` codes (ANY-of). Takes precedence over "
+            "`filters.court` when both are provided."
+        ),
+        examples=[["STJ", "TRP"]],
+    )
+    from_date: Optional[date] = Field(
+        None,
+        description=(
+            "Shorthand for `filters.date_from`. Inclusive lower bound on "
+            "`decision_date`. Takes precedence over `filters.date_from` when "
+            "both are provided. "
+            "Accepts `YYYY-MM-DD` (ISO), `YYYY/MM/DD`, `YYYY.MM.DD`, "
+            "`DD-MM-YYYY`, `DD/MM/YYYY`, or `DD.MM.YYYY`."
+        ),
+        examples=["2020-01-01"],
+    )
+    to_date: Optional[date] = Field(
+        None,
+        description=(
+            "Shorthand for `filters.date_to`. Inclusive upper bound on "
+            "`decision_date`. Takes precedence over `filters.date_to` when "
+            "both are provided. "
+            "Accepts `YYYY-MM-DD` (ISO), `YYYY/MM/DD`, `YYYY.MM.DD`, "
+            "`DD-MM-YYYY`, `DD/MM/YYYY`, or `DD.MM.YYYY`."
+        ),
+        examples=["2024-12-31"],
+    )
+    is_auj: Optional[bool] = Field(
+        None,
+        description=(
+            "Shorthand for `filters.is_auj`. `true` keeps only AUJs, `false` "
+            "excludes them, `null`/omit returns both. Takes precedence over "
+            "`filters.is_auj` when both are provided."
+        ),
+        examples=[True],
+    )
+
+    @field_validator("from_date", "to_date", mode="before")
+    @classmethod
+    def _coerce_date(cls, v: object) -> object:
+        return _parse_flexible_date(v)
+
+    def resolved_filters(self) -> Optional[Filters]:
+        """Return the effective Filters, merging top-level shorthands over
+        the nested `filters` object. Returns None when nothing is set."""
+        base = self.filters or Filters()
+        merged = Filters(
+            court=self.courts if self.courts is not None else base.court,
+            date_from=self.from_date if self.from_date is not None else base.date_from,
+            date_to=self.to_date if self.to_date is not None else base.date_to,
+            is_auj=self.is_auj if self.is_auj is not None else base.is_auj,
+            legal_domain=base.legal_domain,
+            decision_type=base.decision_type,
+            extraction_confidence=base.extraction_confidence,
+        )
+        if all(v is None for v in [
+            merged.court, merged.date_from, merged.date_to, merged.is_auj,
+            merged.legal_domain, merged.decision_type, merged.extraction_confidence,
+        ]):
+            return None
+        return merged
 
 
 # Reusable, labelled body examples surfaced in Swagger UI's "Try it out" panel.
@@ -349,10 +506,10 @@ HYBRID_EXAMPLES: dict[str, dict[str, Any]] = {
         },
     },
     "hybrid_filtered": {
-        "summary": "Hybrid search + STJ AUJs since 2020",
+        "summary": "Hybrid search + STJ AUJs since 2020 (nested filters)",
         "description":
             "Same dual-query approach restricted to binding precedent "
-            "from the STJ in the last few years.",
+            "from the STJ in the last few years, using the nested `filters` object.",
         "value": {
             "q_semantic":
                 "responsabilidade civil extracontratual do Estado "
@@ -364,6 +521,24 @@ HYBRID_EXAMPLES: dict[str, dict[str, Any]] = {
                 "is_auj": True,
                 "date_from": "2020-01-01",
             },
+        },
+    },
+    "hybrid_filtered_shorthand": {
+        "summary": "Hybrid search + STJ AUJs since 2020 (top-level shorthands)",
+        "description":
+            "Identical query using the convenience top-level fields "
+            "`courts`, `is_auj`, and `from_date` instead of a nested "
+            "`filters` object. Date formats with `/` or `.` separators "
+            "and day-first order are also accepted (e.g. `01/01/2020`).",
+        "value": {
+            "q_semantic":
+                "responsabilidade civil extracontratual do Estado "
+                "por funcionamento anormal da justiça",
+            "q_keywords": ["responsabilidade", "civil", "Estado"],
+            "limit": 10,
+            "courts": ["STJ"],
+            "is_auj": True,
+            "from_date": "2020-01-01",
         },
     },
     "vectors_only_boost_ratio": {
@@ -819,18 +994,19 @@ async def search_hybrid(
         raise HTTPException(400, "All weights are 0; nothing to search")
     sem_q, kw_q = _resolve_queries(req, need_sem=bool(vec_fields), need_fts=use_fts)
     over = req.limit * req.overfetch
+    effective_filters = req.resolved_filters()
 
     if vec_fields and use_fts:
         per_vec, fts_hits = await asyncio.gather(
-            _search_vectors(sem_q, vec_fields, over, req.filters),
-            _search_fts(kw_q, over, req.filters),
+            _search_vectors(sem_q, vec_fields, over, effective_filters),
+            _search_fts(kw_q, over, effective_filters),
         )
     elif vec_fields:
-        per_vec = await _search_vectors(sem_q, vec_fields, over, req.filters)
+        per_vec = await _search_vectors(sem_q, vec_fields, over, effective_filters)
         fts_hits = []
     else:
         per_vec = {}
-        fts_hits = await _search_fts(kw_q, over, req.filters)
+        fts_hits = await _search_fts(kw_q, over, effective_filters)
 
     per_source: dict[str, list[tuple[str, float]]] = dict(per_vec)
     if use_fts:
@@ -846,7 +1022,7 @@ async def search_hybrid(
     sources_used = [*vec_fields] + (["fts"] if use_fts else [])
     return SearchResponse(query_semantic=sem_q, query_keywords=kw_q,
                           count=len(results), sources_used=sources_used,
-                          mode="hybrid", filters=req.filters, results=results)
+                          mode="hybrid", filters=effective_filters, results=results)
 
 
 
