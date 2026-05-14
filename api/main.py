@@ -8,10 +8,12 @@ Uses Supabase Postgres directly via asyncpg:
 import asyncio
 import json as _json
 import os
+import re
 import time
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import date
-from typing import Any, Optional
+from typing import Any, Literal, Optional, Union
 
 import asyncpg
 import httpx
@@ -25,6 +27,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "google/gemini-embedding-001")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
+LLM_MODEL = os.getenv("LLM_MODEL", "xiaomi/mimo-v2-flash")
 
 DB_HOST = os.getenv("SUPABASE_DB_HOST", "")
 DB_PORT = int(os.getenv("SUPABASE_DB_PORT", "5432"))
@@ -733,6 +736,164 @@ async def embed_query(text: str) -> list[float]:
     return resp.json()["data"][0]["embedding"]
 
 
+_LEGISLATION_NORMALIZE_PROMPT = """You are a Portuguese legal citation normalizer.
+Given a user's messy or informal reference to a Portuguese law, output ONLY a clean canonical citation string.
+
+Rules:
+- Use standard abbreviations when possible: CT, CPC, CC, CP, CPP, CRP, CPA, CPTA, CSC, CCP, RCP, CE, CmC, CRC, CNot, LGT, CEP, CJM
+- For ordinary statutes use: "Lei n.º X/YYYY" or "DL YYYY"
+- Article format (only when an article IS mentioned): "art. N.º" or "art. N.º, n.º M" or "art. N.º, n.º M, alínea X)"
+- If the input does NOT mention a specific article, output ONLY the law abbreviation/name, with NO article.
+
+Examples:
+- "artigo 2 co codigo do trabalho" → "CT art. 2"
+- "código civil art 500" → "CC art. 500"
+- "artigo 394 do codigo do trabalho n 2" → "CT art. 394, n.º 2"
+- "art 580 do cpc" → "CPC art. 580"
+- "lei 65 de 2003 artigo 3" → "Lei n.º 65/2003 art. 3"
+- "decreto lei 15 93 artigo 26" → "DL 15/93 art. 26"
+- "código do trabalho" → "CT"
+- "regulamento das custas processuais" → "RCP"
+- "artigo 50 codigo da estrada" → "CE art. 50"
+
+Input: {raw}
+Output (only the citation string, no explanation):"""
+
+
+def _raw_mentions_article(raw: str) -> bool:
+    """Heuristic: does the raw user input mention an article/paragraph/alínea?"""
+    return bool(
+        re.search(
+            r"\b(?:artigo|artigos|arts?\.|art\b|n\.?\s*º\s*s?|alínea|al\.)",
+            raw,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _strip_invented_article(raw: str, llm_output: str) -> str:
+    """Safety-net: if the user never mentioned an article, drop any 'art. X' the LLM hallucinated."""
+    if not _raw_mentions_article(raw):
+        # Strip from first "art." or "artigo" onwards
+        m = re.search(r"\s+art\b", llm_output, flags=re.IGNORECASE)
+        if m:
+            return llm_output[:m.start()].strip()
+    return llm_output
+
+
+async def _llm_canonicalize_legislation_query(raw: str) -> Optional[str]:
+    """Ask an LLM to turn a messy Portuguese legislation reference into a canonical string.
+
+    Returns the canonical citation (e.g. "CT art. 2") or None on failure.
+    """
+    if not http_client or not OPENROUTER_API_KEY:
+        return None
+    prompt = _LEGISLATION_NORMALIZE_PROMPT.format(raw=raw)
+    try:
+        resp = await http_client.post(
+            f"{OPENROUTER_BASE}/chat/completions",
+            json={
+                "model": LLM_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0,
+                "max_tokens": 60,
+            },
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/pt-caselaw-dgsi",
+                "X-Title": "pt-caselaw-dgsi",
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        # Strip markdown fences if the model wrapped the output
+        if content.startswith("```"):
+            content = content.strip("`").strip()
+            if content.lower().startswith("json"):
+                content = content[4:].lstrip()
+        content = _strip_invented_article(raw, content)
+        # Post-LLM sanity check: does the raw input plausibly refer to the law the LLM chose?
+        law, _ = _parse_legislation_ref(content)
+        if law and not _validate_llm_law_match(raw, law):
+            return None
+        return content or None
+    except Exception:
+        return None
+
+
+_RERANK_LEGISLATION_PROMPT = """You are a Portuguese legal citation matcher.
+Given a user's search query and a list of retrieved legislation references, select which references are ACTUALLY relevant to what the user is looking for.
+
+User query: "{query}"
+
+Retrieved legislation references (ranked by similarity):
+{candidates}
+
+For each reference that genuinely matches the user's intent, output its index (0-based) and a brief reason.
+Return ONLY a JSON array in this exact format (no markdown fences, no explanation):
+[
+  {{"idx": 0, "reason": "Exact match for the requested article"}},
+  {{"idx": 2, "reason": "Same law, related article"}}
+]
+
+If none are relevant, return an empty array: []
+Do NOT include references that are similar but unrelated.
+"""
+
+
+async def _llm_rerank_legislation(query: str, candidates: list[dict]) -> list[dict]:
+    """Ask an LLM to select which retrieved legislation references match the user query.
+
+    Returns a list of {{"idx": int, "reason": str}} objects.
+    """
+    if not http_client or not OPENROUTER_API_KEY or not candidates:
+        return []
+    formatted = "\n".join(
+        f"  {i}. {c['citation_text']} (similarity: {c['sim']:.3f})"
+        for i, c in enumerate(candidates)
+    )
+    prompt = _RERANK_LEGISLATION_PROMPT.format(query=query, candidates=formatted)
+    try:
+        resp = await http_client.post(
+            f"{OPENROUTER_BASE}/chat/completions",
+            json={
+                "model": LLM_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0,
+                "max_tokens": 300,
+            },
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/pt-caselaw-dgsi",
+                "X-Title": "pt-caselaw-dgsi",
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        if content.startswith("```"):
+            content = content.strip("`").strip()
+            if content.lower().startswith("json"):
+                content = content[4:].lstrip()
+        result = _json.loads(content)
+        if not isinstance(result, list):
+            return []
+        valid = [
+            r for r in result
+            if isinstance(r, dict)
+            and isinstance(r.get("idx"), int)
+            and 0 <= r["idx"] < len(candidates)
+        ]
+        return valid
+    except Exception:
+        return []
+
+
 def _row_to_dict(row: asyncpg.Record) -> dict:
     """Convert an asyncpg Record into a JSON-serialisable dict for SearchResult."""
     d = dict(row)
@@ -1135,3 +1296,738 @@ async def get_document(
             )
         doc["full_text"] = full_text
     return doc
+
+
+# ---------------------------------------------------------------------------
+# Legislation article search
+# ---------------------------------------------------------------------------
+
+from extractor.extractor import _LAW_ABBREV, _canonicalize_law, _clean_article_text  # noqa: E402
+
+# All known law string tokens (abbreviations + canonical names), longest first
+# so that e.g. "cpp" matches before "cp" and "cpta" before "cpt".
+_LAW_TOKENS: list[str] = sorted(
+    list(_LAW_ABBREV.keys()) + [v.lower() for v in set(_LAW_ABBREV.values())],
+    key=len,
+    reverse=True,
+)
+
+# Words that are too generic to distinguish one law from another.
+_GENERIC_LAW_WORDS: set[str] = {
+    "codigo", "de", "do", "da", "dos", "das", "e", "o", "a", "os", "as",
+    "no", "na", "nos", "nas", "pelo", "pela", "pelos", "pelas",
+    "n", "n.", "n.", "n.o", "nº", "lei", "decreto", "regulamento", "processo",
+    "tribunal", "tribunais", "artigo", "art", "arts", "art.", "alinea", "al",
+}
+
+
+def _strip_accents_local(s: str) -> str:
+    """Remove Portuguese diacritics for loose matching."""
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _validate_llm_law_match(raw: str, law: str) -> bool:
+    """Post-LLM sanity check: does the raw input plausibly refer to this law?
+
+    Rejects obvious hallucinations (e.g. 'codigo da estrada' → 'CT').
+    """
+    if not raw or not law:
+        return False
+
+    raw_norm = _strip_accents_local(raw).lower()
+    law_norm = _strip_accents_local(law).lower()
+
+    # 1. Check if any abbreviation for this exact law appears in raw
+    abbrs = [
+        k for k, v in _LAW_ABBREV.items()
+        if _strip_accents_local(v).lower() == law_norm
+    ]
+    for abbr in abbrs:
+        if re.search(r"\b" + re.escape(abbr.lower()) + r"\b", raw_norm):
+            return True
+
+    # 2. Full canonical name appears verbatim
+    if law_norm in raw_norm:
+        return True
+
+    # 3. Meaningful keywords from the law name
+    law_words = [
+        w for w in law_norm.split()
+        if w not in _GENERIC_LAW_WORDS and len(w) > 2
+    ]
+    for w in law_words:
+        if w in raw_norm:
+            return True
+
+    # 4. Statute number match (e.g. "65/2003")
+    num_match = re.search(r"\b(\d+(?:-[A-Za-z])?)/(\d{2,4})\b", law_norm)
+    if num_match:
+        full_num = f"{num_match.group(1)}/{num_match.group(2)}"
+        if full_num in raw_norm:
+            return True
+        # Accept when both number and year appear separately in raw
+        if num_match.group(1) in raw_norm and num_match.group(2) in raw_norm:
+            return True
+
+    return False
+
+
+def _normalize_article_prefix(art_str: str) -> Optional[str]:
+    """Normalize a user-supplied article string to the canonical LIKE prefix
+    used in the DB (e.g. '394.º', '394.º, n.º 2', '394.º, n.º 2, alínea b)').
+
+    Steps:
+      1. Apply the extractor's _clean_article_text (ordinal marks, alínea, n.º).
+      2. Ensure the leading article number carries '.º'.
+      3. Normalise the 'n.º' separator to ', n.º ' (comma-space).
+      4. Normalise the 'alínea' separator similarly.
+    """
+    if not art_str:
+        return None
+    s = _clean_article_text(art_str)
+    if not s:
+        return None
+    # Ensure leading article number has .º (e.g. '394' → '394.º', '394.º' unchanged).
+    # Check first whether .º is already present; if not, add it after the whole digit run.
+    if not re.match(r"^\d+(?:-[A-Za-z])?\.º", s):
+        s = re.sub(r"^(\d+(?:-[A-Za-z])?)", r"\1.º", s)
+    # Normalise 'N.º M' → ', n.º M' (space-separated after .º)
+    s = re.sub(r"(?<=\.º)\s+n\.º\s+", ", n.º ", s)
+    # Normalise alínea separator
+    s = re.sub(r",?\s+alínea\s+", ", alínea ", s)
+    return s.strip() or None
+
+
+def _parse_legislation_ref(raw: str) -> tuple[Optional[str], Optional[str]]:
+    """Parse a free-form article citation into (canonical_law, article_like_prefix).
+
+    Handles mixed Portuguese user input such as:
+      'CT art. 394'                → ('Código do Trabalho', '394.º')
+      'artigo 394.º CT'            → ('Código do Trabalho', '394.º')
+      'CPC art. 640, n.º 3'       → ('Código de Processo Civil', '640.º, n.º 3')
+      'artigo 394 n.º 2 al. b) CT' → ('Código do Trabalho', '394.º, n.º 2, alínea b)')
+      'Código Civil 483'           → ('Código Civil', '483.º')
+      'Lei n.º 65/2003 art. 5'    → ('Lei n.º 65/2003', '5.º')
+      'DL 15/93 art. 26'          → ('Decreto-Lei n.º 15/93', '26.º')
+      'CT'                         → ('Código do Trabalho', None)  ← any article
+
+    Returns (None, None) when no law token is found.
+    Returns (law, None) when a law is found but no article part remains.
+    """
+    s = raw.strip()
+    law_found: Optional[str] = None
+    law_span: tuple[int, int] = (0, 0)
+
+    # 1. Statute patterns first (Decreto-Lei / DL, Lei)
+    for pat, tpl in [
+        (
+            r"\b(?:decreto[\s\-]?lei|dl)\s*(?:n[°º.\s]*)?\s*"
+            r"(\d+(?:-[A-Za-z])?/\d+)\b",
+            "Decreto-Lei n.º {}",
+        ),
+        (
+            r"\blei\s*(?:n[°º.\s]*)?\s*(\d+(?:-[A-Za-z])?/\d+)\b",
+            "Lei n.º {}",
+        ),
+    ]:
+        m = re.search(pat, s, re.IGNORECASE)
+        if m:
+            law_found = tpl.format(m.group(1))
+            law_span = (m.start(), m.end())
+            break
+
+    # 2. Known abbreviations / full canonical names (longest first)
+    if not law_found:
+        s_lower = s.lower()
+        for tok in _LAW_TOKENS:
+            idx = s_lower.find(tok)
+            if idx == -1:
+                continue
+            before_ok = idx == 0 or not s_lower[idx - 1].isalpha()
+            after_ok = (
+                idx + len(tok) >= len(s_lower)
+                or not s_lower[idx + len(tok)].isalpha()
+            )
+            if before_ok and after_ok:
+                law_found = _canonicalize_law(s[idx: idx + len(tok)])
+                law_span = (idx, idx + len(tok))
+                break
+
+    if not law_found:
+        return None, None
+
+    # 3. Remove law token; whatever remains is the article reference
+    start, end = law_span
+    art_raw = (s[:start] + " " + s[end:]).strip()
+
+    # Strip "artigo"/"art." keywords
+    art_raw = re.sub(r"\b(?:artigos?|arts?\.?)\s*", "", art_raw, flags=re.IGNORECASE)
+    # Strip Portuguese connectors that may dangle after law removal ("do", "da", …)
+    art_raw = re.sub(
+        r"\b(?:do|da|dos|das|de|no|na|nos|nas|pelo|pela|pelos|pelas)\b",
+        " ", art_raw, flags=re.IGNORECASE,
+    )
+    art_raw = re.sub(r"\s+", " ", art_raw).strip().strip(".,;:")
+
+    if not art_raw:
+        return law_found, None
+
+    return law_found, _normalize_article_prefix(art_raw)
+
+
+def _article_condition(
+    law: str, article_prefix: Optional[str], idx: int
+) -> tuple[str, list[Any], int]:
+    """Build the SQL fragment for one (law, article_prefix) constraint.
+
+    The GIN containment check on the law name uses the existing
+    `idx_documents_metadata` (jsonb_path_ops) index to narrow the row set;
+    the EXISTS+LIKE on the article is then a cheap sequential scan of that
+    smaller set.
+
+    Returns (sql_fragment, params, next_param_idx).
+    """
+    params: list[Any] = []
+
+    # GIN index-friendly containment check (jsonb_path_ops supports @>).
+    gin_sql = (
+        "metadata @> jsonb_build_object("
+        f"  'legislation_cited', jsonb_build_array(jsonb_build_object('law', ${idx}::text))"
+        ")"
+    )
+    params.append(law)
+    idx += 1
+
+    if article_prefix:
+        exists_sql = (
+            f"EXISTS ("
+            f"  SELECT 1 FROM jsonb_array_elements(metadata->'legislation_cited') _el "
+            f"  WHERE _el->>'law' = ${idx} AND _el->>'article' LIKE ${idx + 1}"
+            f")"
+        )
+        params.append(law)
+        params.append(article_prefix + "%")
+        idx += 2
+        sql = f"({gin_sql} AND {exists_sql})"
+    else:
+        sql = gin_sql
+
+    return sql, params, idx
+
+
+class ArticleRef(BaseModel):
+    """Structured (law, article) article reference."""
+    law: str = Field(
+        description=(
+            "Law name or abbreviation (`CT`, `CPC`, `CC`, `CP`, `CPP`, …) or "
+            "full canonical Portuguese name (`Código do Trabalho`, …), or "
+            "statute form (`Lei n.º 65/2003`, `DL 15/93`). "
+            "Resolved to the canonical full name automatically."
+        ),
+        examples=["CT", "Código do Trabalho", "CPC"],
+    )
+    article: Optional[str] = Field(
+        None,
+        description=(
+            "Article reference (e.g. `394`, `394.º`, `394.º, n.º 2`). "
+            "Prefix-matched: `394` matches `394.º`, `394.º, n.º 1`, "
+            "`394.º, n.º 2, alínea b)`, etc. "
+            "Omit to match any article of this law."
+        ),
+        examples=["394", "394.º, n.º 2"],
+    )
+
+
+class NormalizedArticle(BaseModel):
+    """Parsed and canonicalized article reference (echoed in the response)."""
+    raw: str = Field(description="Original input string.")
+    law: str = Field(description="Canonical Portuguese law name.")
+    article: Optional[str] = Field(
+        None,
+        description=(
+            "Normalized article prefix used for DB LIKE matching. "
+            "`null` means all articles of this law are matched."
+        ),
+    )
+    llm_canonicalized: Optional[str] = Field(
+        None,
+        description="Raw LLM-normalized citation string before deterministic parsing.",
+    )
+
+
+class LegislationSearchRequest(BaseModel):
+    """Request body for `POST /search/legislation`."""
+    articles: list[Union[ArticleRef, str]] = Field(
+        description=(
+            "One or more article references. Each entry may be:\n\n"
+            "* A **raw string** (parsed automatically): `'CT art. 394'`, "
+            "`'artigo 394.º do Código do Trabalho'`, `'CPC 640'`, "
+            "`'Lei n.º 65/2003 art. 5'`, `'DL 15/93 art. 26'`.\n"
+            "* A **structured object** `{law, article}` for unambiguous input.\n\n"
+            "Law names are resolved to canonical forms; article numbers are "
+            "prefix-matched so `394` matches `394.º`, `394.º, n.º 1`, "
+            "`394.º, n.º 2, alínea b)`, etc."
+        ),
+        examples=[["CT art. 394", "CPC art. 640"]],
+    )
+    match: Literal["any", "all"] = Field(
+        "any",
+        description=(
+            "`any` (default) — OR: documents citing at least one listed article. "
+            "`all` — AND: documents that cite every listed article."
+        ),
+    )
+    limit: int = Field(20, ge=1, le=100, description="Maximum results to return.")
+    offset: int = Field(0, ge=0, description="Result offset for pagination.")
+    filters: Optional[Filters] = Field(
+        None, description="Optional structured filters (same as `POST /search`).",
+    )
+    courts: Optional[list[str]] = Field(
+        None,
+        description="Shorthand for `filters.court` (ANY-of court codes).",
+        examples=[["STJ", "TRP"]],
+    )
+    from_date: Optional[date] = Field(
+        None,
+        description=(
+            "Shorthand for `filters.date_from`. "
+            "Accepts `YYYY-MM-DD`, `DD/MM/YYYY`, and other formats."
+        ),
+    )
+    to_date: Optional[date] = Field(
+        None,
+        description=(
+            "Shorthand for `filters.date_to`. "
+            "Accepts `YYYY-MM-DD`, `DD/MM/YYYY`, and other formats."
+        ),
+    )
+    is_auj: Optional[bool] = Field(
+        None, description="Shorthand for `filters.is_auj`.",
+    )
+
+    @field_validator("from_date", "to_date", mode="before")
+    @classmethod
+    def _coerce_date(cls, v: object) -> object:
+        return _parse_flexible_date(v)
+
+    def resolved_filters(self) -> Optional[Filters]:
+        base = self.filters or Filters()
+        merged = Filters(
+            court=self.courts if self.courts is not None else base.court,
+            date_from=self.from_date if self.from_date is not None else base.date_from,
+            date_to=self.to_date if self.to_date is not None else base.date_to,
+            is_auj=self.is_auj if self.is_auj is not None else base.is_auj,
+            legal_domain=base.legal_domain,
+            decision_type=base.decision_type,
+            extraction_confidence=base.extraction_confidence,
+        )
+        if all(v is None for v in [
+            merged.court, merged.date_from, merged.date_to, merged.is_auj,
+            merged.legal_domain, merged.decision_type, merged.extraction_confidence,
+        ]):
+            return None
+        return merged
+
+
+class LegislationSearchResponse(BaseModel):
+    """Response from `POST /search/legislation`."""
+    count: int = Field(description="Number of results returned (≤ `limit`).")
+    offset: int = Field(description="Pagination offset used.")
+    articles_searched: list[NormalizedArticle] = Field(
+        description="Resolved article references echoed for traceability.",
+    )
+    match: str = Field(description="Match mode used: `any` or `all`.")
+    filters: Optional[Filters] = Field(None, description="Filters as received.")
+    results: list[SearchResult] = Field(
+        description="Matching documents ordered by decision_date descending.",
+    )
+
+
+class LegislationSemanticSearchRequest(BaseModel):
+    """Request body for `POST /search/legislation/semantic`."""
+    q: str = Field(description="Free-form query describing the legislation being searched for.")
+    top_k: int = Field(
+        20, ge=1, le=100,
+        description="Number of legislation candidates to retrieve via embedding similarity.",
+    )
+    limit: int = Field(20, ge=1, le=100, description="Maximum documents to return.")
+    offset: int = Field(0, ge=0, description="Result offset for pagination.")
+    filters: Optional[Filters] = Field(None, description="Optional structured filters.")
+    courts: Optional[list[str]] = Field(
+        None, description="Shorthand for `filters.court`.",
+    )
+    from_date: Optional[date] = Field(None, description="Shorthand for `filters.date_from`.")
+    to_date: Optional[date] = Field(None, description="Shorthand for `filters.date_to`.")
+    is_auj: Optional[bool] = Field(None, description="Shorthand for `filters.is_auj`.")
+
+    @field_validator("from_date", "to_date", mode="before")
+    @classmethod
+    def _coerce_date(cls, v: object) -> object:
+        return _parse_flexible_date(v)
+
+    def resolved_filters(self) -> Optional[Filters]:
+        base = self.filters or Filters()
+        merged = Filters(
+            court=self.courts if self.courts is not None else base.court,
+            date_from=self.from_date if self.from_date is not None else base.date_from,
+            date_to=self.to_date if self.to_date is not None else base.date_to,
+            is_auj=self.is_auj if self.is_auj is not None else base.is_auj,
+            legal_domain=base.legal_domain,
+            decision_type=base.decision_type,
+            extraction_confidence=base.extraction_confidence,
+        )
+        if all(v is None for v in [
+            merged.court, merged.date_from, merged.date_to, merged.is_auj,
+            merged.legal_domain, merged.decision_type, merged.extraction_confidence,
+        ]):
+            return None
+        return merged
+
+
+class LegislationSemanticCandidate(BaseModel):
+    """A legislation candidate retrieved via embedding similarity."""
+    law: str
+    article: Optional[str]
+    citation_text: str
+    doc_count: int
+    sim: float
+    selected: bool = Field(False, description="Whether the LLM deemed this relevant.")
+    reason: Optional[str] = Field(None, description="LLM explanation for selection.")
+
+
+class LegislationSemanticSearchResponse(BaseModel):
+    """Response from `POST /search/legislation/semantic`."""
+    count: int
+    offset: int
+    query: str
+    candidates: list[LegislationSemanticCandidate]
+    results: list[SearchResult]
+
+
+LEGISLATION_EXAMPLES: dict[str, dict[str, Any]] = {
+    "any_raw_strings": {
+        "summary": "Any of: CT art. 394 OR CPC art. 640",
+        "description": "Raw string inputs — law is detected automatically.",
+        "value": {
+            "articles": ["CT art. 394", "CPC art. 640"],
+            "match": "any",
+            "limit": 20,
+        },
+    },
+    "all_structured": {
+        "summary": "All of: CT art. 394 AND CT art. 395",
+        "description": "Structured objects for unambiguous input.",
+        "value": {
+            "articles": [
+                {"law": "CT", "article": "394"},
+                {"law": "CT", "article": "395"},
+            ],
+            "match": "all",
+            "limit": 20,
+        },
+    },
+    "specific_paragraph": {
+        "summary": "CT art. 394 n.º 2 — specific paragraph, STJ only",
+        "description": "Prefix-match down to a specific n.º.",
+        "value": {
+            "articles": ["CT art. 394 n.º 2"],
+            "courts": ["STJ"],
+            "limit": 20,
+        },
+    },
+    "statute": {
+        "summary": "Decreto-Lei n.º 15/93 art. 21",
+        "description": "Statute-style reference (DL shorthand also accepted).",
+        "value": {
+            "articles": ["DL 15/93 art. 21"],
+            "limit": 20,
+        },
+    },
+    "law_only": {
+        "summary": "All docs citing the CRP (any article)",
+        "description": "Omit article to match any citation of a given law.",
+        "value": {
+            "articles": [{"law": "CRP"}],
+            "limit": 20,
+        },
+    },
+}
+
+
+@app.post(
+    "/search/legislation",
+    response_model=LegislationSearchResponse,
+    tags=["search"],
+    summary="Search by cited legislation articles",
+    description=(
+        "Return decisions that cite one or more specific legislation articles.\n\n"
+        "Each entry in `articles` is a **free-form string** "
+        "(e.g. `CT art. 394`, `artigo 394.º do CPC`, `DL 15/93 art. 21`) "
+        "or a structured `{law, article}` object.\n\n"
+        "**Parsing:**\n\n"
+        "1. The **law** is identified by abbreviation (`CT`, `CPC`, `CC`, `CP`, "
+        "`CPP`, `CRP`, `CPA`, `CPTA`, `CPT`, `CSC`, `CCP`, `RCP`) or full canonical "
+        "name (`Código do Trabalho`, …) or statute form "
+        "(`Lei n.º 65/2003`, `DL 15/93`, `Decreto-Lei 401/82`, …).\n"
+        "2. The **article** number is normalised and **prefix-matched**: "
+        "`394` matches `394.º`, `394.º, n.º 1`, `394.º, n.º 2, alínea b)`, etc. "
+        "Omit the article to match any citation of a law.\n\n"
+        "**`match` mode:**\n\n"
+        "* `any` (default) — return documents citing at least one listed article.\n"
+        "* `all` — return only documents that cite every listed article.\n\n"
+        "Results are ordered by `decision_date` descending. "
+        "Use `offset` + `limit` for pagination.\n\n"
+        "**Performance note:** The existing GIN index on `metadata` "
+        "(`jsonb_path_ops`) is used for the law-level containment check; "
+        "the article prefix filter is then applied on the resulting row set."
+    ),
+    responses={
+        400: {"description": "No valid article references after parsing."},
+        422: {
+            "description": (
+                "A raw string did not contain a recognisable law token. "
+                "Include an abbreviation (CT, CPC, CC, …) or canonical name."
+            )
+        },
+    },
+)
+async def search_legislation(
+    req: LegislationSearchRequest = Body(
+        ..., openapi_examples=LEGISLATION_EXAMPLES
+    ),
+):
+    # 1. Parse and normalise every article reference.
+    normalized: list[NormalizedArticle] = []
+    for entry in req.articles:
+        if isinstance(entry, str):
+            llm_canonical: Optional[str] = None
+            # Always LLM-normalize raw strings first for maximum accuracy
+            llm_canonical = await _llm_canonicalize_legislation_query(entry)
+            if llm_canonical:
+                law, article = _parse_legislation_ref(llm_canonical)
+            else:
+                # Safety-net: fall back to deterministic parser if LLM fails
+                law, article = _parse_legislation_ref(entry)
+            if not law:
+                raise HTTPException(
+                    422,
+                    f"Could not identify a law in: {entry!r}. "
+                    "Include an abbreviation (CT, CPC, CC, …) or full canonical name.",
+                )
+            normalized.append(
+                NormalizedArticle(
+                    raw=entry,
+                    law=law,
+                    article=article,
+                    llm_canonicalized=llm_canonical,
+                )
+            )
+        else:  # ArticleRef
+            law = _canonicalize_law(entry.law)
+            art: Optional[str] = None
+            if entry.article:
+                art = _normalize_article_prefix(entry.article)
+            normalized.append(
+                NormalizedArticle(
+                    raw=f"{entry.law} {entry.article or ''}".strip(),
+                    law=law,
+                    article=art,
+                )
+            )
+
+    if not normalized:
+        raise HTTPException(400, "No valid article references provided.")
+
+    # 2. Build SQL WHERE clause.
+    effective_filters = req.resolved_filters()
+    filt_sql, filt_params = _build_filters(effective_filters, start_idx=1)
+
+    all_params: list[Any] = list(filt_params)
+    next_idx = len(filt_params) + 1
+    conditions: list[str] = []
+
+    for ref in normalized:
+        cond_sql, cond_params, next_idx = _article_condition(
+            ref.law, ref.article, next_idx
+        )
+        conditions.append(cond_sql)
+        all_params.extend(cond_params)
+
+    joiner = " OR " if req.match == "any" else " AND "
+    article_clause = "(" + joiner.join(conditions) + ")"
+
+    where_parts: list[str] = []
+    if filt_sql:
+        where_parts.append(filt_sql)
+    where_parts.append(article_clause)
+    where_clause = " AND ".join(where_parts)
+
+    limit_idx = next_idx
+    offset_idx = next_idx + 1
+    all_params.extend([req.limit, req.offset])
+
+    sql = (
+        f"SELECT {DOC_COLUMNS} FROM documents "
+        f"WHERE {where_clause} "
+        f"ORDER BY decision_date DESC NULLS LAST "
+        f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
+    )
+
+    async with db_pool.acquire() as conn:
+        try:
+            rows = await conn.fetch(sql, *all_params, timeout=50)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                504,
+                "Database query timed out. The law requested is cited in many documents; "
+                "try adding filters (courts, date range) or narrowing the article.",
+            ) from exc
+
+    results = [SearchResult(**_row_to_dict(r)) for r in rows]
+
+    return LegislationSearchResponse(
+        count=len(results),
+        offset=req.offset,
+        articles_searched=normalized,
+        match=req.match,
+        filters=effective_filters,
+        results=results,
+    )
+
+
+@app.post(
+    "/search/legislation/semantic",
+    response_model=LegislationSemanticSearchResponse,
+    tags=["search"],
+    summary="Semantic search by cited legislation (embedding + LLM rerank)",
+    description=(
+        "Return decisions that cite legislation semantically similar to the query.\n\n"
+        "1. The query is embedded and matched against pre-computed legislation embeddings.\n"
+        "2. Top-K candidates are retrieved via HNSW vector search.\n"
+        "3. An LLM reranks the candidates and selects genuinely relevant legislation.\n"
+        "4. Documents citing the selected legislation are returned.\n\n"
+        "Useful when the user describes legislation in natural language "
+        "rather than exact canonical names."
+    ),
+)
+async def search_legislation_semantic(
+    req: LegislationSemanticSearchRequest = Body(...),
+):
+    if not req.q or not req.q.strip():
+        raise HTTPException(400, "Query parameter 'q' is required.")
+
+    # 1. Embed the query
+    try:
+        emb = await embed_query(req.q.strip())
+    except Exception as exc:
+        raise HTTPException(502, f"Embedding API error: {exc}") from exc
+
+    emb_str = "[" + ",".join(str(v) for v in emb) + "]"
+
+    # 2. Vector search legislation_embeddings
+    async with db_pool.acquire() as conn:
+        leg_rows = await conn.fetch(
+            """
+            SELECT law, article, citation_text, doc_count,
+                   (1 - (embedding <=> $1::halfvec))::real AS sim
+            FROM legislation_embeddings
+            ORDER BY embedding <=> $1::halfvec
+            LIMIT $2
+            """,
+            emb_str, req.top_k,
+        )
+
+    if not leg_rows:
+        return LegislationSemanticSearchResponse(
+            count=0, offset=req.offset, query=req.q,
+            candidates=[], results=[],
+        )
+
+    candidates = [
+        {"idx": i, "law": r["law"], "article": r["article"],
+         "citation_text": r["citation_text"], "doc_count": r["doc_count"],
+         "sim": float(r["sim"])}
+        for i, r in enumerate(leg_rows)
+    ]
+
+    # 3. LLM reranking
+    selected = await _llm_rerank_legislation(req.q, candidates)
+    selected_indices = {s["idx"] for s in selected}
+
+    candidate_models = [
+        LegislationSemanticCandidate(
+            law=c["law"],
+            article=c["article"],
+            citation_text=c["citation_text"],
+            doc_count=c["doc_count"],
+            sim=c["sim"],
+            selected=i in selected_indices,
+            reason=next((s["reason"] for s in selected if s["idx"] == i), None),
+        )
+        for i, c in enumerate(candidates)
+    ]
+
+    # If LLM rejected all candidates, fall back to top-1 as a safety net
+    if not selected_indices:
+        selected_indices = {0}
+        candidate_models[0].selected = True
+        candidate_models[0].reason = "Fallback: top similarity match"
+
+    # 4. Build document query for selected legislation
+    effective_filters = req.resolved_filters()
+    filt_sql, filt_params = _build_filters(effective_filters, start_idx=1)
+    all_params: list[Any] = list(filt_params)
+    next_idx = len(filt_params) + 1
+    conditions: list[str] = []
+
+    for idx in selected_indices:
+        leg = leg_rows[idx]
+        law = leg["law"]
+        article = leg["article"]
+        # article may be None or empty string — treat as law-only
+        article_prefix = article if article and article.strip() else None
+        cond_sql, cond_params, next_idx = _article_condition(
+            law, article_prefix, next_idx
+        )
+        conditions.append(cond_sql)
+        all_params.extend(cond_params)
+
+    article_clause = "(" + " OR ".join(conditions) + ")"
+
+    where_parts: list[str] = []
+    if filt_sql:
+        where_parts.append(filt_sql)
+    where_parts.append(article_clause)
+    where_clause = " AND ".join(where_parts)
+
+    limit_idx = next_idx
+    offset_idx = next_idx + 1
+    all_params.extend([req.limit, req.offset])
+
+    sql = (
+        f"SELECT {DOC_COLUMNS} FROM documents "
+        f"WHERE {where_clause} "
+        f"ORDER BY decision_date DESC NULLS LAST "
+        f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
+    )
+
+    async with db_pool.acquire() as conn:
+        try:
+            rows = await conn.fetch(sql, *all_params, timeout=50)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                504,
+                "Database query timed out. The selected legislation is cited in many documents; "
+                "try adding filters (courts, date range) or narrowing the query.",
+            ) from exc
+
+    results = [SearchResult(**_row_to_dict(r)) for r in rows]
+
+    return LegislationSemanticSearchResponse(
+        count=len(results),
+        offset=req.offset,
+        query=req.q,
+        candidates=candidate_models,
+        results=results,
+    )

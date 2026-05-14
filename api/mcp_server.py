@@ -187,6 +187,69 @@ async def get_document(doc_id: str, include_full_text: bool = False) -> dict:
 
 
 @mcp.tool
+async def search_by_legislation(
+    articles: list[str],
+    match: str = "any",
+    limit: int = 10,
+    court: Optional[list[str]] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    is_auj: Optional[bool] = None,
+    offset: int = 0,
+) -> dict:
+    """Find court decisions that cite specific legislation articles.
+
+    Each entry in `articles` is a free-form Portuguese article reference that
+    is parsed automatically. The law is identified by abbreviation or full name;
+    the article number is prefix-matched against the stored canonical form.
+
+    Args:
+        articles: List of article references as free-form strings.
+                  Examples: 'CT art. 394', 'artigo 394.º do CPC',
+                  'Código Civil 483', 'DL 15/93 art. 21',
+                  'CPC art. 640 n.º 3', 'Lei n.º 65/2003 art. 5'.
+                  Known abbreviations: CT, CPC, CC, CP, CPP, CRP, CPA,
+                  CPTA, CPT, CSC, CCP, RCP and their full canonical names.
+                  Statute forms 'Lei n.º X/Y' and 'Decreto-Lei n.º X/Y'
+                  (or 'DL X/Y') are also recognised.
+                  Prefix matching: '394' matches '394.º', '394.º, n.º 1',
+                  '394.º, n.º 2, alínea b)', etc.
+                  Omit the article number to match any article of a law:
+                  e.g. 'CRP' returns all decisions citing the Constitution.
+        match: 'any' (default) — documents citing at least one listed article.
+               'all' — documents citing every listed article.
+        limit: Max results to return (1–50, default 10).
+        court: Restrict to one or more court codes e.g. ["STJ", "TRP"].
+        date_from: Earliest decision date ISO YYYY-MM-DD (inclusive).
+        date_to: Latest decision date ISO YYYY-MM-DD (inclusive).
+        is_auj: true = only binding precedents; false = exclude them.
+        offset: Result offset for pagination (default 0).
+    """
+    from datetime import date as _date
+    limit = max(1, min(limit, 50))
+    filters = _make_filters(court, None, is_auj, date_from, date_to, None)
+
+    req = _m.LegislationSearchRequest(
+        articles=articles,
+        match=match,  # type: ignore[arg-type]
+        limit=limit,
+        offset=offset,
+        filters=filters,
+    )
+
+    # Reuse the REST endpoint logic directly.
+    resp = await _m.search_legislation(req)
+
+    return {
+        "articles_searched": [a.model_dump() for a in resp.articles_searched],
+        "match": resp.match,
+        "count": resp.count,
+        "offset": resp.offset,
+        "results": _serialise(resp.results),
+    }
+
+
+@mcp.tool
 async def get_filters() -> dict:
     """Discover available courts and the corpus date range for use as search filters.
 

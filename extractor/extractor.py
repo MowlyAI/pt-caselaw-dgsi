@@ -92,6 +92,16 @@ _LAW_ABBREV: dict[str, str] = {
     "cpta": "Código de Processo nos Tribunais Administrativos",
     "ccp": "Código dos Contratos Públicos",
     "rcp": "Regulamento das Custas Processuais",
+    "ce": "Código da Estrada",
+    "cod. estrada": "Código da Estrada",
+    "cmc": "Código Comercial",
+    "cod. comercial": "Código Comercial",
+    "crc": "Código do Registo Criminal",
+    "cnot": "Código do Notariado",
+    "lgt": "Lei Geral Tributária",
+    "lei tributária": "Lei Geral Tributária",
+    "cep": "Código de Execução de Penas",
+    "cjm": "Código de Justiça Militar",
 }
 
 _CTX_PRIORITY = {"supporting": 3, "distinguishing": 2, "criticizing": 1, "referencing": 0}
