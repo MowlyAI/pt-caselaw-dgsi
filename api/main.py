@@ -1974,7 +1974,7 @@ async def search_legislation_semantic(
         candidate_models[0].selected = True
         candidate_models[0].reason = "Fallback: top similarity match"
 
-    # 4. Build document query for selected legislation
+    # 4. Build document query for selected legislation using fast exact-match @> via GIN
     effective_filters = req.resolved_filters()
     filt_sql, filt_params = _build_filters(effective_filters, start_idx=1)
     all_params: list[Any] = list(filt_params)
@@ -1985,13 +1985,12 @@ async def search_legislation_semantic(
         leg = leg_rows[idx]
         law = leg["law"]
         article = leg["article"]
-        # article may be None or empty string — treat as law-only
-        article_prefix = article if article and article.strip() else None
-        cond_sql, cond_params, next_idx = _article_condition(
-            law, article_prefix, next_idx
-        )
-        conditions.append(cond_sql)
-        all_params.extend(cond_params)
+        match_obj: dict[str, Any] = {"legislation_cited": [{"law": law}]}
+        if article and article.strip():
+            match_obj["legislation_cited"][0]["article"] = article.strip()
+        conditions.append(f"metadata @> ${next_idx}::jsonb")
+        all_params.append(_json.dumps(match_obj))
+        next_idx += 1
 
     article_clause = "(" + " OR ".join(conditions) + ")"
 
