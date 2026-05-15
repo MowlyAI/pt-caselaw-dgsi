@@ -8,44 +8,100 @@ MCP streamable HTTP: http://localhost:8000/mcp   (Claude Code, Anthropic API con
 MCP SSE:             http://localhost:8000/sse   (Claude Desktop)
 """
 import json
+import logging
 
 from fastmcp.server.http import create_sse_app
 from fastmcp.utilities.lifespan import combine_lifespans
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from api.main import app, lifespan as _api_lifespan
 from api.mcp_server import mcp
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
-# MCP probe middleware
-# Claude and MCP clients send a plain GET to /mcp before opening a session.
-# The FastMCP streamable-HTTP handler returns 406 for GETs without the SSE
-# Accept header.  Using a @app.get("/mcp") route to fix this causes FastAPI
-# to return 405 for POST /mcp (path matches but method not allowed).
-# A middleware intercepts only GET at /mcp paths and returns 200 {"auth":"none"}.
-# All other methods (POST, DELETE) pass straight through to the mounted app.
-# /.well-known/ endpoints intentionally return 404 — that is the RFC 9728
-# signal for "no OAuth required".  Returning 200 from those would start the
-# full OAuth registration flow in any compliant client.
+# Pure-ASGI MCP middleware  (replaces BaseHTTPMiddleware to avoid SSE buffering)
+#
+# Responsibility 1 — GET /mcp or /mcp/ → 200 JSON probe reply
+#   MCP clients probe the endpoint with a plain GET before opening a session.
+#   FastMCP's streamable-HTTP handler returns 406 for plain GETs, so we
+#   answer here before the request ever reaches the mounted sub-app.
+#
+# Responsibility 2 — GET /.well-known/oauth-protected-resource[/*] → 200 PRM
+#   RFC 9728 "Protected Resource Metadata" with no authorization_servers tells
+#   MCP clients this is a PUBLIC resource — no OAuth required.
+#   Returning 404 causes MCP 2025-03-26 clients to fall through to the legacy
+#   path: /.well-known/oauth-authorization-server → /register, all of which
+#   also return 404, making the client report an auth error and abort.
+#   A 200 PRM with an empty (or absent) authorization_servers list stops
+#   compliant clients at discovery step 1.
+#
+# Responsibility 3 — pass through everything else, logging the status code.
 # ---------------------------------------------------------------------------
-_MCP_PROBE_PATHS = {"/mcp", "/mcp/"}
-_MCP_PROBE_BODY = json.dumps({"server": "PT Caselaw DGSI", "protocol": "MCP", "auth": "none"}).encode()
+
+_MCP_PROBE_PATHS = frozenset({"/mcp", "/mcp/"})
+_PRM_PREFIX = "/.well-known/oauth-protected-resource"
+_MCP_PROBE_BODY = json.dumps({
+    "server": "PT Caselaw DGSI",
+    "protocol": "MCP",
+    "auth": "none",
+}).encode()
 
 
-class _MCPProbeMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
-        if request.method == "GET" and request.url.path in _MCP_PROBE_PATHS:
-            return Response(
-                content=_MCP_PROBE_BODY,
-                media_type="application/json",
-                headers={"Cache-Control": "no-store"},
-            )
-        return await call_next(request)
+async def _send_json(send: Send, status: int, body: bytes) -> None:
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+            (b"cache-control", b"no-store"),
+            (b"access-control-allow-origin", b"*"),
+        ],
+    })
+    await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
-app.add_middleware(_MCPProbeMiddleware)
+class _MCPMiddleware:
+    """Pure ASGI middleware — no BaseHTTPMiddleware buffering of SSE streams."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path: str = scope.get("path", "")
+        method: str = scope.get("method", "")
+
+        # ── 1. MCP probe ────────────────────────────────────────────────────
+        if method == "GET" and path in _MCP_PROBE_PATHS:
+            await _send_json(send, 200, _MCP_PROBE_BODY)
+            return
+
+        # ── 2. OAuth PRM — public resource, no authorization servers ────────
+        if method == "GET" and (
+            path == _PRM_PREFIX or path.startswith(_PRM_PREFIX + "/")
+        ):
+            headers_dict = dict(scope.get("headers", []))
+            host = headers_dict.get(b"host", b"localhost").decode()
+            scheme = scope.get("scheme", "https")
+            body = json.dumps({"resource": f"{scheme}://{host}/mcp/"}).encode()
+            await _send_json(send, 200, body)
+            return
+
+        # ── 3. Pass through with response-code logging ──────────────────────
+        async def _logged_send(message: dict) -> None:
+            if message.get("type") == "http.response.start":
+                logger.info("response %s %s → %d", method, path, message["status"])
+            await send(message)
+
+        await self.app(scope, receive, _logged_send)
+
+
+app.add_middleware(_MCPMiddleware)
 
 # Streamable HTTP transport (Claude Code, Anthropic API MCP connector)
 _mcp_http_app = mcp.http_app(path="/")
