@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 # Responsibility 3 — pass through everything else, logging the status code.
 # ---------------------------------------------------------------------------
 
-_MCP_PROBE_PATHS = frozenset({"/mcp", "/mcp/"})
 _PRM_PREFIX = "/.well-known/oauth-protected-resource"
 _MCP_PROBE_BODY = json.dumps({
     "server": "PT Caselaw DGSI",
@@ -76,10 +75,16 @@ class _MCPMiddleware:
         path: str = scope.get("path", "")
         method: str = scope.get("method", "")
 
-        # ── 1. MCP probe ────────────────────────────────────────────────────
-        if method == "GET" and path in _MCP_PROBE_PATHS:
-            await _send_json(send, 200, _MCP_PROBE_BODY)
-            return
+        # ── 1. MCP probe (GET) or path normalisation (POST) ─────────────────
+        if path == "/mcp" or path == "/mcp/":
+            if method == "GET":
+                await _send_json(send, 200, _MCP_PROBE_BODY)
+                return
+            # For POST/DELETE rewrite /mcp → /mcp/ to avoid Starlette's 307
+            if path == "/mcp":
+                scope = dict(scope)
+                scope["path"] = "/mcp/"
+                scope["raw_path"] = b"/mcp/"
 
         # ── 2. OAuth PRM — list ourselves as the authorization server ─────────
         if method == "GET" and (
