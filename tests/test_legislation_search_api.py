@@ -148,6 +148,35 @@ def test_very_common_law_returns_504_not_500() -> list[str]:
     return failures
 
 
+SEMANTIC_CASES: list[tuple[str, str | None, str | None]] = [
+    # (query, expected_law_contains, expected_article_contains)
+    # --- original problematic case ---
+    ("artigo 2 do codigo da estrada", "Código da Estrada", "2"),
+    # --- common laws with specific articles (previously 504) ---
+    ("codigo civil artigo 342", "Código Civil", "342"),
+    ("codigo civil artigo 334", "Código Civil", "334"),
+    ("codigo civil artigo 483", "Código Civil", "483"),
+    ("codigo penal artigo 150", "Código Penal", "150"),
+    ("codigo do trabalho artigo 394", "Código do Trabalho", "394"),
+    ("codigo do trabalho artigo 2", "Código do Trabalho", "2"),
+    ("codigo comercial artigo 429", "Código Comercial", "429"),  # art. 429.º has 432 docs
+    # --- messy / natural language ---
+    ("artigo 394 do codigo do trabalho", "Código do Trabalho", "394"),
+    ("artigo 580 do codigo processo civil", "Código de Processo Civil", "580"),
+    ("artigo 69 do codigo penal", "Código Penal", "69"),
+    # --- less common laws ---
+    ("codigo das sociedades comerciais artigo 20", "Sociedades Comerciais", "20"),
+    ("codigo contratos publicos artigo 15", "Contratos Públicos", "15"),
+    ("regulamento custas processuais artigo 8", "Custas Processuais", "8"),
+    ("codigo processo tribunais administrativos artigo 5", "Tribunais Administrativos", "5"),
+    # --- law-only, less common ---
+    ("codigo da estrada", "Código da Estrada", None),
+    ("codigo comercial", "Código Comercial", None),
+    ("codigo notariado", "Notariado", None),  # may be "Código de Notariado" or "Código do Notariado" in data
+    ("lei geral tributaria", "Lei Geral Tributária", None),
+]
+
+
 def test_semantic_legislation_search() -> list[str]:
     """Semantic legislation search finds law via embeddings + LLM rerank."""
     failures: list[str] = []
@@ -181,6 +210,118 @@ def test_semantic_legislation_search() -> list[str]:
     return failures
 
 
+def test_semantic_legislation_comprehensive() -> list[str]:
+    """Run semantic search over many cases, checking for correct law, article, and results."""
+    failures: list[str] = []
+    for query, expected_law, expected_article in SEMANTIC_CASES:
+        payload = {"q": query, "top_k": 20, "limit": 2}
+        label = f"semantic({query!r})"
+        try:
+            resp = _post("/search/legislation/semantic", payload, timeout=60)
+        except urllib.error.HTTPError as e:
+            if e.code == 504:
+                # 504 is acceptable for law-only on very common laws
+                if expected_article is None and expected_law and any(l in expected_law for l in ("Civil", "Penal", "Trabalho")):
+                    print(f"OK    {label}  →  504 (law-only on common law, expected)")
+                    continue
+            failures.append(f"FAIL  {label}  →  HTTP {e.code}: {e.read().decode()[:120]}")
+            continue
+        except Exception as e:
+            failures.append(f"FAIL  {label}  →  exception: {e}")
+            continue
+
+        candidates = resp.get("candidates", [])
+        selected = [c for c in candidates if c.get("selected")]
+
+        if not selected:
+            failures.append(f"FAIL  {label}  →  no candidates selected by LLM")
+            continue
+
+        # Check that at least one selected candidate matches expected law
+        law_match = any(expected_law in (c.get("law") or "") for c in selected)
+        if not law_match:
+            laws = [c.get("law") for c in selected]
+            failures.append(
+                f"FAIL  {label}  →  expected law containing {expected_law!r} in selected, got {laws}"
+            )
+            continue
+
+        # If article expected, check at least one selected candidate matches
+        if expected_article:
+            art_match = any(expected_article in (c.get("article") or "") for c in selected)
+            if not art_match:
+                arts = [c.get("article") for c in selected]
+                failures.append(
+                    f"FAIL  {label}  →  expected article containing {expected_article!r} in selected, got {arts}"
+                )
+                continue
+
+        # Verify returned documents actually cite the selected legislation
+        results = resp.get("results", [])
+        if not results:
+            print(f"OK    {label}  →  law={selected[0]['law']!r}, article={selected[0].get('article')!r}, 0 results")
+            continue
+
+        # Verify that at least one returned result cites the expected legislation
+        matched_doc = False
+        for result in results:
+            meta = result.get("metadata", {})
+            leg_cited = meta.get("legislation_cited", [])
+            for lc in leg_cited:
+                lc_law = lc.get("law", "")
+                lc_art = lc.get("article", "")
+                if expected_law in lc_law:
+                    if not expected_article or expected_article in lc_art:
+                        matched_doc = True
+                        break
+            if matched_doc:
+                break
+
+        if not matched_doc:
+            # Show citations from first result for debugging
+            first_meta = results[0].get("metadata", {})
+            first_leg = first_meta.get("legislation_cited", [])
+            doc_laws = [(lc.get("law"), lc.get("article")) for lc in first_leg[:3]]
+            failures.append(
+                f"FAIL  {label}  →  no result cites expected legislation. First doc cited: {doc_laws}"
+            )
+            continue
+
+        print(
+            f"OK    {label}  →  law={selected[0]['law']!r}, "
+            f"article={selected[0].get('article')!r}, {len(results)} results, doc verified"
+        )
+
+    return failures
+
+
+def test_semantic_edge_cases() -> list[str]:
+    """Edge cases for semantic search."""
+    failures: list[str] = []
+
+    # Empty query
+    try:
+        _post("/search/legislation/semantic", {"q": "", "limit": 1})
+        failures.append("FAIL  semantic('')  →  expected 400, got 200")
+    except urllib.error.HTTPError as e:
+        if e.code == 400:
+            print("OK    semantic('')  →  400 as expected")
+        else:
+            failures.append(f"FAIL  semantic('')  →  expected 400, got {e.code}")
+
+    # Nonsense query
+    try:
+        resp = _post("/search/legislation/semantic", {"q": "banana sandwich", "limit": 1}, timeout=30)
+        if resp.get("results"):
+            print(f"OK    semantic('banana sandwich')  →  {len(resp['results'])} results (fallback)")
+        else:
+            print("OK    semantic('banana sandwich')  →  0 results (no relevant legislation)")
+    except Exception as e:
+        failures.append(f"FAIL  semantic('banana sandwich')  →  exception: {e}")
+
+    return failures
+
+
 if __name__ == "__main__":
     all_failures: list[str] = []
     all_failures.extend(test_clean_and_messy_inputs())
@@ -188,6 +329,8 @@ if __name__ == "__main__":
     all_failures.extend(test_invalid_input_returns_422())
     all_failures.extend(test_very_common_law_returns_504_not_500())
     all_failures.extend(test_semantic_legislation_search())
+    all_failures.extend(test_semantic_legislation_comprehensive())
+    all_failures.extend(test_semantic_edge_cases())
 
     print()
     if all_failures:

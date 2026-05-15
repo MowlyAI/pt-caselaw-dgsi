@@ -832,15 +832,20 @@ User query: "{query}"
 Retrieved legislation references (ranked by similarity):
 {candidates}
 
+Each reference shows: index, citation text, embedding similarity score, and how many court decisions cite it (doc_count).
+Prefer references with higher doc_count when multiple variants match the same law/article — a higher doc_count indicates the canonical, well-formed reference.
+Ignore references with very low doc_count (e.g. 1–5) if a similar reference exists with a much higher doc_count.
+
 For each reference that genuinely matches the user's intent, output its index (0-based) and a brief reason.
 Return ONLY a JSON array in this exact format (no markdown fences, no explanation):
 [
-  {{"idx": 0, "reason": "Exact match for the requested article"}},
+  {{"idx": 0, "reason": "Exact match for the requested article, 3854 documents"}},
   {{"idx": 2, "reason": "Same law, related article"}}
 ]
 
 If none are relevant, return an empty array: []
 Do NOT include references that are similar but unrelated.
+Do NOT select a low-doc_count variant when a high-doc_count variant of the same article exists.
 """
 
 
@@ -852,7 +857,7 @@ async def _llm_rerank_legislation(query: str, candidates: list[dict]) -> list[di
     if not http_client or not OPENROUTER_API_KEY or not candidates:
         return []
     formatted = "\n".join(
-        f"  {i}. {c['citation_text']} (similarity: {c['sim']:.3f})"
+        f"  {i}. {c['citation_text']} (similarity: {c['sim']:.3f}, doc_count: {c.get('doc_count', 0)})"
         for i, c in enumerate(candidates)
     )
     prompt = _RERANK_LEGISLATION_PROMPT.format(query=query, candidates=formatted)
