@@ -80,6 +80,9 @@ async def lifespan(app: FastAPI):
     async with db_pool.acquire() as conn:
         n = await conn.fetchval("SELECT count(*) FROM documents WHERE embedding IS NOT NULL")
         print(f"Connected to Postgres. {n} documents with embeddings.")
+    # Probe the embedding API so a missing/invalid key is caught at startup.
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set — embedding search will not work.")
     yield
     await db_pool.close()
     await http_client.aclose()
@@ -735,9 +738,15 @@ async def embed_query(text: str) -> list[float]:
         json=payload,
         headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
     )
+    body = resp.json()
     if resp.status_code != 200:
         raise HTTPException(502, f"Embedding API error: {resp.status_code} {resp.text[:200]}")
-    return resp.json()["data"][0]["embedding"]
+    # Some providers return 200 with a top-level "error" key instead of "data"
+    # (e.g. missing/invalid API key, quota exceeded).
+    if "data" not in body:
+        err = body.get("error", body)
+        raise HTTPException(502, f"Embedding API returned 200 but no 'data' key: {err}")
+    return body["data"][0]["embedding"]
 
 
 _LEGISLATION_NORMALIZE_PROMPT = """You are a Portuguese legal citation normalizer.
