@@ -1326,7 +1326,7 @@ async def get_document(
 # Legislation article search
 # ---------------------------------------------------------------------------
 
-from extractor.extractor import _LAW_ABBREV, _canonicalize_law, _clean_article_text  # noqa: E402
+from api._law_utils import _LAW_ABBREV, _canonicalize_law, _clean_article_text  # noqa: E402
 
 # All known law string tokens (abbreviations + canonical names), longest first
 # so that e.g. "cpp" matches before "cp" and "cpta" before "cpt".

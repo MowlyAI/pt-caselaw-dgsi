@@ -28,9 +28,7 @@ COPY --from=builder /install /usr/local
 
 # API-only runtime: the service reads from Supabase Postgres at request time,
 # so we ship no local data and no pipeline workers.
-# extractor is imported by api/main.py for law abbreviation tables and helpers.
 COPY api ./api
-COPY extractor ./extractor
 
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
