@@ -1,13 +1,29 @@
 """MCP server for PT Caselaw DGSI — exposes search as MCP tools via fastmcp.
 
-Run standalone (stdio, for Claude Desktop / Claude Code local):
-    python -m api.mcp_server
+## Claude Desktop (stdio — recommended for local use)
+Add this block to ~/Library/Application Support/Claude/claude_desktop_config.json:
 
-Run standalone (HTTP on a separate port):
-    fastmcp run api/mcp_server.py --transport http --port 8001
+    {
+      "mcpServers": {
+        "pt-caselaw-dgsi": {
+          "command": "/Users/franciscocosta/repos/pt-caselaw-dgsi/.venv312/bin/python3.12",
+          "args": ["-m", "api.mcp_server"]
+        }
+      }
+    }
 
-Run alongside the FastAPI app (shared db pool, single process):
-    uvicorn api.app:app        # MCP endpoint at /mcp/
+Then restart Claude Desktop. The server picks up credentials from .env.local
+automatically (absolute path — no cwd dependency).
+
+## Remote HTTP (Claude.ai / Anthropic API connector)
+Start the combined FastAPI + MCP server:
+    uvicorn api.app:app --host 0.0.0.0 --port 8000
+
+Streamable HTTP endpoint (Claude.ai remote MCP): http://localhost:8000/mcp/
+SSE endpoint (legacy Claude Desktop HTTP mode):  http://localhost:8000/sse
+
+## Standalone HTTP (separate process)
+    fastmcp run api/mcp_server.py:mcp --transport http --port 8001
 """
 from __future__ import annotations
 
@@ -30,8 +46,8 @@ async def _lifespan(server: FastMCP):
     """
     owns = _m.db_pool is None
     if owns:
-        from dotenv import load_dotenv
-        load_dotenv(".env.local")
+        # api.main already calls load_dotenv at import time with an absolute path.
+        # Nothing extra needed here.
         _m.http_client = httpx.AsyncClient(timeout=30)
         _m.db_pool = await asyncpg.create_pool(
             host=_m.DB_HOST, port=_m.DB_PORT,
@@ -332,3 +348,10 @@ async def get_filters() -> dict:
     Call once at the start of a session to ground filter choices.
     """
     return await _m._compute_filters_payload()
+
+
+if __name__ == "__main__":
+    # stdio transport — used by Claude Desktop when it launches this file as a subprocess.
+    # The FastMCP lifespan initialises the DB pool and HTTP client on startup.
+    # show_banner=False keeps stderr clean so Claude Desktop can parse MCP output correctly.
+    mcp.run(show_banner=False)

@@ -13,6 +13,7 @@ import time
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 from typing import Any, Literal, Optional, Union
 
 import asyncpg
@@ -21,7 +22,10 @@ from dotenv import load_dotenv
 from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query
 from pydantic import BaseModel, Field, field_validator
 
-load_dotenv(".env.local")
+# Use absolute path so the server works regardless of the working directory
+# (e.g. when launched as a Claude Desktop subprocess from the home directory).
+_ENV_FILE = Path(__file__).parent.parent / ".env.local"
+load_dotenv(_ENV_FILE)
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
