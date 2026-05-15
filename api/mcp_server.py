@@ -7,13 +7,17 @@ Add this block to ~/Library/Application Support/Claude/claude_desktop_config.jso
       "mcpServers": {
         "pt-caselaw-dgsi": {
           "command": "/Users/franciscocosta/repos/pt-caselaw-dgsi/.venv312/bin/python3.12",
-          "args": ["-m", "api.mcp_server"]
+          "args": ["-m", "api.mcp_server"],
+          "env": {
+            "PYTHONPATH": "/Users/franciscocosta/repos/pt-caselaw-dgsi"
+          }
         }
       }
     }
 
-Then restart Claude Desktop. The server picks up credentials from .env.local
-automatically (absolute path — no cwd dependency).
+PYTHONPATH is required because Claude Desktop launches the process from its own
+working directory, not the project root, so the `api` package would not be found.
+Credentials are loaded from .env.local via an absolute path (no cwd dependency).
 
 ## Remote HTTP (Claude.ai / Anthropic API connector)
 Start the combined FastAPI + MCP server:
