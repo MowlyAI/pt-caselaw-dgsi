@@ -55,11 +55,53 @@ mcp = FastMCP(
     instructions=(
         "Search over Portuguese court decisions from DGSI "
         "(STJ, STA, TC, TRP, TRL, TRC, TRG, TCAN, TCAS and others).\n\n"
-        "Recommended workflow:\n"
-        "1. Call get_filters to discover available courts and the date range.\n"
-        "2. Call search with a natural-language query and optional filters.\n"
-        "3. Call get_document on interesting results to get full metadata "
-        "(parties, legal citations, ratio decidendi, amounts, timeline)."
+
+        "## Available tools\n"
+        "- get_filters — discover court codes and date range (call once per session)\n"
+        "- search — hybrid semantic + keyword search over all decisions\n"
+        "- search_by_legislation — find decisions that cite specific laws/articles\n"
+        "- get_document — fetch the full record for a single decision\n\n"
+
+        "## Recommended workflow\n"
+        "1. Call get_filters to discover available court codes and the corpus date range.\n"
+        "2. Use search for open-ended questions about legal doctrine, facts, or outcomes.\n"
+        "   Always supply BOTH q_semantic (the full natural-language question) AND "
+        "q_keywords (important Portuguese terms). This drives both the vector and FTS "
+        "engines and produces the best-ranked results.\n"
+        "3. Use search_by_legislation when the user cites a specific law or article "
+        "(e.g. 'artigo 342.º do Código Civil', 'CT art. 394'). Pass as many article "
+        "references as needed; use match='all' if every article must be cited.\n"
+        "4. Call get_document on interesting results to read parties, legal citations, "
+        "ratio decidendi, amounts, and the full procedural timeline.\n\n"
+
+        "## Best practices — general search (search tool)\n"
+        "- Write q_semantic as a complete legal question or description, not a keyword list: "
+        "e.g. 'despedimento sem justa causa por uso indevido de email corporativo' "
+        "beats 'despedimento email'.\n"
+        "- Extract 3–6 discriminating Portuguese nouns/verbs for q_keywords. "
+        "These feed a GIN full-text index (Portuguese stemming + unaccent); "
+        "they do NOT need to match q_semantic word-for-word.\n"
+        "- Apply court and date filters to narrow results before increasing limit.\n"
+        "- Set is_auj=true to retrieve only binding precedents (Acórdãos de "
+        "Uniformização de Jurisprudência / Fixação de Jurisprudência).\n"
+        "- Use weights to bias the ranking: boost embedding_ratio (legal reasoning) "
+        "for doctrinal questions; boost embedding_context (facts + parties + decision) "
+        "for factual similarity searches.\n\n"
+
+        "## Best practices — legislation search (search_by_legislation tool)\n"
+        "- Pass article references exactly as the user wrote them; the parser handles "
+        "Portuguese abbreviations (CT, CC, CPC, CP, CPP, CRP, CPA, CPTA, CSC, CCP, "
+        "RCP) and statute forms (DL 15/93 art. 21, Lei n.º 65/2003 art. 3).\n"
+        "- Article numbers are prefix-matched: '394' matches '394.º', '394.º, n.º 1', "
+        "'394.º, n.º 2, alínea b)', etc. You do NOT need to include the ordinal suffix.\n"
+        "- Omit the article number to match any article of a law (e.g. 'CRP' returns "
+        "all decisions citing the Constitution).\n"
+        "- Use match='any' (default) for OR logic and match='all' for AND logic when "
+        "multiple articles are supplied.\n"
+        "- Avoid law-only queries on the most heavily-cited codes (CC, CPC, CP, CRP) "
+        "without a date or court filter — they match hundreds of thousands of documents "
+        "and will time out. Always include an article number for those codes.\n"
+        "- Use pagination (offset) to page through large result sets.\n"
     ),
     lifespan=_lifespan,
 )
@@ -117,6 +159,22 @@ async def search(
     decision_type: Optional[list[str]] = None,
 ) -> list[dict]:
     """Search Portuguese court decisions (DGSI) using hybrid search (3 vector columns + FTS fused with RRF).
+
+    Best practices:
+    - Always supply BOTH q_semantic and q_keywords for the best results.
+      q_semantic drives the three HNSW vector indexes (summary, context, ratio);
+      q_keywords drives the GIN full-text index (Portuguese stemming + unaccent).
+      Fusing all four sources with Reciprocal Rank Fusion yields the highest recall.
+    - Write q_semantic as a complete legal sentence, not a keyword list.
+      Good: "despedimento sem justa causa por uso indevido de email corporativo"
+      Bad:  "despedimento email"
+    - For q_keywords extract 3–6 discriminating Portuguese nouns or verbs.
+      They do NOT need to mirror q_semantic word-for-word.
+    - Filter first, then increase limit: apply court + date filters before
+      widening the result window.
+    - Set is_auj=true to retrieve only binding uniformisation precedents.
+    - For doctrinal questions weight embedding_ratio higher (legal reasoning column).
+      For factual similarity weight embedding_context higher (facts + outcome column).
 
     Args:
         q_semantic: Natural-language query for vector search (e.g. "despedimento
@@ -199,23 +257,34 @@ async def search_by_legislation(
 ) -> dict:
     """Find court decisions that cite specific legislation articles.
 
-    Each entry in `articles` is a free-form Portuguese article reference that
-    is parsed automatically. The law is identified by abbreviation or full name;
-    the article number is prefix-matched against the stored canonical form.
+    Each entry in `articles` is a free-form Portuguese article reference parsed
+    automatically. The law is identified by abbreviation or full name; the article
+    is prefix-matched against the stored canonical form in the database.
+
+    Best practices:
+    - Pass references exactly as the user wrote them; the parser is tolerant of
+      typos, missing accents, and mixed formats (e.g. 'artigo 394 do CT',
+      'CT art. 394', 'Código do Trabalho 394').
+    - Article numbers are prefix-matched: '394' matches '394.º', '394.º, n.º 1',
+      '394.º, n.º 2, alínea b)', etc. You do NOT need the ordinal suffix.
+    - Omit the article to match ALL articles of a law (e.g. 'CRP' for Constitution).
+      Avoid this pattern for the most heavily-cited codes (CC, CPC, CP, CRP) without
+      a court or date filter — they match hundreds of thousands of docs and will time out.
+    - Use match='all' only when the user explicitly requires every cited article to be
+      present in the same decision. Default 'any' is correct for most queries.
+    - For multi-article queries use match='any' with a long articles list rather than
+      calling the tool multiple times.
+    - Page through large result sets with offset rather than increasing limit above 50.
+
+    Known abbreviations: CT, CPC, CC, CP, CPP, CRP, CPA, CPTA, CPT, CSC, CCP, RCP
+    and their full canonical Portuguese names. Statute forms 'Lei n.º X/Y',
+    'Decreto-Lei n.º X/Y' (or 'DL X/Y') are also recognised.
 
     Args:
         articles: List of article references as free-form strings.
                   Examples: 'CT art. 394', 'artigo 394.º do CPC',
                   'Código Civil 483', 'DL 15/93 art. 21',
                   'CPC art. 640 n.º 3', 'Lei n.º 65/2003 art. 5'.
-                  Known abbreviations: CT, CPC, CC, CP, CPP, CRP, CPA,
-                  CPTA, CPT, CSC, CCP, RCP and their full canonical names.
-                  Statute forms 'Lei n.º X/Y' and 'Decreto-Lei n.º X/Y'
-                  (or 'DL X/Y') are also recognised.
-                  Prefix matching: '394' matches '394.º', '394.º, n.º 1',
-                  '394.º, n.º 2, alínea b)', etc.
-                  Omit the article number to match any article of a law:
-                  e.g. 'CRP' returns all decisions citing the Constitution.
         match: 'any' (default) — documents citing at least one listed article.
                'all' — documents citing every listed article.
         limit: Max results to return (1–50, default 10).
