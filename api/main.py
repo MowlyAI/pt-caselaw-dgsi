@@ -1054,34 +1054,30 @@ async def root():
 
 
 # ---------------------------------------------------------------------------
-# MCP 2025 OAuth discovery — signal that this is a public, unauthenticated
-# resource so compliant clients (FastMCP 3.x) skip the OAuth flow entirely.
-# Without these, clients probe /.well-known/oauth-protected-resource, get
-# 404, and abort the connection rather than proceeding unauthenticated.
+# MCP endpoint probe handler — Claude and other MCP clients send a plain
+# GET to the MCP path before establishing a session.  The FastMCP
+# streamable-HTTP handler returns 406 for GETs without the SSE Accept
+# header, which some clients misread as an auth failure.  This FastAPI
+# route intercepts GET /mcp and GET /mcp/ and returns 200 so clients know
+# the server is reachable and unauthenticated.  POST requests (actual MCP
+# protocol traffic) are NOT intercepted — they fall through to the mounted
+# FastMCP app.
+# NOTE: OAuth well-known discovery endpoints intentionally return 404.
+#   A 404 from /.well-known/oauth-protected-resource is the correct RFC 9728
+#   signal for "no auth required."  Returning 200 from that endpoint causes
+#   clients to start the full OAuth flow.
 # ---------------------------------------------------------------------------
 from fastapi.responses import JSONResponse  # noqa: E402  (imported here to group with its routes)
 
 
-@app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
-@app.get("/.well-known/oauth-protected-resource/mcp", include_in_schema=False)
-async def oauth_protected_resource():
-    """RFC 9728 — empty authorization_servers signals no OAuth required."""
+@app.get("/mcp", include_in_schema=False)
+@app.get("/mcp/", include_in_schema=False)
+async def mcp_probe():
+    """Health probe for the MCP endpoint — returns 200 so clients don't mistake 406 for auth failure."""
     return JSONResponse(
-        content={"resource": "https://pt-caselaw-dgsi.onrender.com", "authorization_servers": []},
+        content={"server": "PT Caselaw DGSI", "protocol": "MCP", "auth": "none"},
         headers={"Cache-Control": "no-store"},
     )
-
-
-@app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
-async def oauth_authorization_server():
-    """Return 404 body that clients can parse rather than a generic 404."""
-    return JSONResponse(status_code=404, content={"error": "no_auth", "message": "This server requires no authentication."})
-
-
-@app.post("/register", include_in_schema=False)
-async def oauth_register():
-    """Dynamic client registration not supported — return 400 per RFC 7591."""
-    return JSONResponse(status_code=400, content={"error": "registration_not_supported"})
 
 
 @app.get(
