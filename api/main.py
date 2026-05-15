@@ -7,12 +7,15 @@ Uses Supabase Postgres directly via asyncpg:
 """
 import asyncio
 import json as _json
+import logging
 import os
 import re
 import time
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import date
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
 
@@ -733,6 +736,7 @@ def _build_filters(f: Optional[Filters], start_idx: int = 1) -> tuple[str, list[
 
 async def embed_query(text: str) -> list[float]:
     payload = {"model": EMBEDDING_MODEL, "input": text, "dimensions": EMBEDDING_DIM}
+    logger.debug("embed_query: model=%s dim=%s input_len=%d", EMBEDDING_MODEL, EMBEDDING_DIM, len(text))
     resp = await http_client.post(
         f"{OPENROUTER_BASE}/embeddings",
         json=payload,
@@ -740,12 +744,19 @@ async def embed_query(text: str) -> list[float]:
     )
     body = resp.json()
     if resp.status_code != 200:
+        logger.error("embed_query: HTTP %d — %s", resp.status_code, resp.text[:500])
         raise HTTPException(502, f"Embedding API error: {resp.status_code} {resp.text[:200]}")
     # Some providers return 200 with a top-level "error" key instead of "data"
-    # (e.g. missing/invalid API key, quota exceeded).
+    # (e.g. missing/invalid API key, quota exceeded, unsupported model).
     if "data" not in body:
+        logger.error(
+            "embed_query: HTTP 200 but no 'data' key. top-level keys=%s body=%s",
+            list(body.keys()),
+            str(body)[:500],
+        )
         err = body.get("error", body)
         raise HTTPException(502, f"Embedding API returned 200 but no 'data' key: {err}")
+    logger.debug("embed_query: got %d floats", len(body["data"][0]["embedding"]))
     return body["data"][0]["embedding"]
 
 
@@ -1040,6 +1051,37 @@ def _rrf_merge_multi(per_source: dict[str, list[tuple[str, float]]],
 )
 async def root():
     return {"name": "PT Caselaw DGSI Search API", "status": "ok", "version": "3.0.0"}
+
+
+# ---------------------------------------------------------------------------
+# MCP 2025 OAuth discovery — signal that this is a public, unauthenticated
+# resource so compliant clients (FastMCP 3.x) skip the OAuth flow entirely.
+# Without these, clients probe /.well-known/oauth-protected-resource, get
+# 404, and abort the connection rather than proceeding unauthenticated.
+# ---------------------------------------------------------------------------
+from fastapi.responses import JSONResponse  # noqa: E402  (imported here to group with its routes)
+
+
+@app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+@app.get("/.well-known/oauth-protected-resource/mcp", include_in_schema=False)
+async def oauth_protected_resource():
+    """RFC 9728 — empty authorization_servers signals no OAuth required."""
+    return JSONResponse(
+        content={"resource": "https://pt-caselaw-dgsi.onrender.com", "authorization_servers": []},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
+async def oauth_authorization_server():
+    """Return 404 body that clients can parse rather than a generic 404."""
+    return JSONResponse(status_code=404, content={"error": "no_auth", "message": "This server requires no authentication."})
+
+
+@app.post("/register", include_in_schema=False)
+async def oauth_register():
+    """Dynamic client registration not supported — return 400 per RFC 7591."""
+    return JSONResponse(status_code=400, content={"error": "registration_not_supported"})
 
 
 @app.get(
