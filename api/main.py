@@ -1053,32 +1053,6 @@ async def root():
     return {"name": "PT Caselaw DGSI Search API", "status": "ok", "version": "3.0.0"}
 
 
-# ---------------------------------------------------------------------------
-# MCP endpoint probe handler — Claude and other MCP clients send a plain
-# GET to the MCP path before establishing a session.  The FastMCP
-# streamable-HTTP handler returns 406 for GETs without the SSE Accept
-# header, which some clients misread as an auth failure.  This FastAPI
-# route intercepts GET /mcp and GET /mcp/ and returns 200 so clients know
-# the server is reachable and unauthenticated.  POST requests (actual MCP
-# protocol traffic) are NOT intercepted — they fall through to the mounted
-# FastMCP app.
-# NOTE: OAuth well-known discovery endpoints intentionally return 404.
-#   A 404 from /.well-known/oauth-protected-resource is the correct RFC 9728
-#   signal for "no auth required."  Returning 200 from that endpoint causes
-#   clients to start the full OAuth flow.
-# ---------------------------------------------------------------------------
-from fastapi.responses import JSONResponse  # noqa: E402  (imported here to group with its routes)
-
-
-@app.get("/mcp", include_in_schema=False)
-@app.get("/mcp/", include_in_schema=False)
-async def mcp_probe():
-    """Health probe for the MCP endpoint — returns 200 so clients don't mistake 406 for auth failure."""
-    return JSONResponse(
-        content={"server": "PT Caselaw DGSI", "protocol": "MCP", "auth": "none"},
-        headers={"Cache-Control": "no-store"},
-    )
-
 
 @app.get(
     "/health",
