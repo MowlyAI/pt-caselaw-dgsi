@@ -57,7 +57,7 @@ async def _lifespan(server: FastMCP):
             host=_m.DB_HOST, port=_m.DB_PORT,
             user=_m.DB_USER, password=_m.DB_PASSWORD,
             database=_m.DB_NAME,
-            min_size=1, max_size=5,
+            min_size=0, max_size=5,  # min_size=0: don't block startup with a network round-trip
             statement_cache_size=0,
             command_timeout=30,
             init=_m._init_connection,
