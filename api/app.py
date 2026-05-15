@@ -81,14 +81,18 @@ class _MCPMiddleware:
             await _send_json(send, 200, _MCP_PROBE_BODY)
             return
 
-        # ── 2. OAuth PRM — public resource, no authorization servers ────────
+        # ── 2. OAuth PRM — list ourselves as the authorization server ─────────
         if method == "GET" and (
             path == _PRM_PREFIX or path.startswith(_PRM_PREFIX + "/")
         ):
             headers_dict = dict(scope.get("headers", []))
             host = headers_dict.get(b"host", b"localhost").decode()
             scheme = scope.get("scheme", "https")
-            body = json.dumps({"resource": f"{scheme}://{host}/mcp/"}).encode()
+            base = f"{scheme}://{host}"
+            body = json.dumps({
+                "resource": f"{base}/mcp/",
+                "authorization_servers": [base],
+            }).encode()
             await _send_json(send, 200, body)
             return
 

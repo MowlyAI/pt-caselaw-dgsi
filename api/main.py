@@ -10,6 +10,7 @@ import json as _json
 import logging
 import os
 import re
+import secrets
 import time
 import unicodedata
 from contextlib import asynccontextmanager
@@ -22,7 +23,8 @@ from typing import Any, Literal, Optional, Union
 import asyncpg
 import httpx
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query
+from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
 # Use absolute path so the server works regardless of the working directory
@@ -216,6 +218,73 @@ app = FastAPI(
     openapi_tags=OPENAPI_TAGS,
     contact={"name": "pt-caselaw-dgsi"},
 )
+
+# ---------------------------------------------------------------------------
+# OAuth 2.0 endpoints (open / no real auth — exists so MCP clients can
+# complete the discovery + token flow and connect without errors)
+# ---------------------------------------------------------------------------
+
+@app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
+async def oauth_authorization_server_metadata(request: Request):
+    base = f"{request.url.scheme}://{request.url.netloc}"
+    return {
+        "issuer": base,
+        "authorization_endpoint": f"{base}/authorize",
+        "token_endpoint": f"{base}/token",
+        "registration_endpoint": f"{base}/register",
+        "scopes_supported": ["mcp"],
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+    }
+
+
+@app.post("/register", include_in_schema=False)
+async def oauth_register(request: Request):
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    return {
+        "client_id": secrets.token_urlsafe(16),
+        "client_secret": secrets.token_urlsafe(32),
+        "client_id_issued_at": int(time.time()),
+        "client_secret_expires_at": 0,
+        "redirect_uris": body.get("redirect_uris", []),
+        "grant_types": ["authorization_code", "client_credentials"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }
+
+
+@app.get("/authorize", include_in_schema=False)
+async def oauth_authorize(
+    redirect_uri: str,
+    state: str = "",
+    code_challenge: str = "",
+    code_challenge_method: str = "S256",
+    client_id: str = "",
+    response_type: str = "code",
+):
+    """Immediately redirect back with an auth code — no login required."""
+    code = secrets.token_urlsafe(32)
+    url = f"{redirect_uri}?code={code}"
+    if state:
+        url += f"&state={state}"
+    return RedirectResponse(url=url, status_code=302)
+
+
+@app.post("/token", include_in_schema=False)
+async def oauth_token(request: Request):
+    """Issue a Bearer token to anyone who asks."""
+    return {
+        "access_token": secrets.token_urlsafe(32),
+        "token_type": "Bearer",
+        "expires_in": 86400,
+        "scope": "mcp",
+    }
 
 
 _DATE_FORMATS = (
