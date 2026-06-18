@@ -50,10 +50,17 @@ HNSW_EF_SEARCH = int(os.getenv("HNSW_EF_SEARCH", "40"))
 EMBEDDING_FIELDS: tuple[str, ...] = ("embedding", "embedding_context", "embedding_ratio")
 ALL_SOURCES: tuple[str, ...] = (*EMBEDDING_FIELDS, "fts")
 
-DOC_COLUMNS = (
-    "doc_id, url, court_short, process_number, decision_date, "
-    "legal_domain, is_auj, summary, metadata"
+DOC_COLUMN_NAMES = (
+    "doc_id", "url", "court_short", "process_number", "decision_date",
+    "legal_domain", "is_auj", "summary", "metadata",
 )
+DOC_COLUMNS = ", ".join(DOC_COLUMN_NAMES)
+LEGISLATION_CITATIONS_TABLE = "document_legislation_citations"
+
+
+def _qualified_doc_columns(alias: str) -> str:
+    """Return document columns qualified with a SQL alias."""
+    return ", ".join(f"{alias}.{col}" for col in DOC_COLUMN_NAMES)
 
 # Initialised at startup
 db_pool: Optional[asyncpg.Pool] = None
@@ -762,7 +769,9 @@ class SearchResponse(BaseModel):
     )
 
 
-def _build_filters(f: Optional[Filters], start_idx: int = 1) -> tuple[str, list[Any]]:
+def _build_filters(
+    f: Optional[Filters], start_idx: int = 1, alias: str = ""
+) -> tuple[str, list[Any]]:
     """Build a SQL WHERE fragment (without 'WHERE'/'AND' prefix) and the
     matching positional params list. The first placeholder will be `$start_idx`.
     Returns ("", []) when no filters are set.
@@ -772,32 +781,33 @@ def _build_filters(f: Optional[Filters], start_idx: int = 1) -> tuple[str, list[
     clauses: list[str] = []
     params: list[Any] = []
     idx = start_idx
+    prefix = f"{alias}." if alias else ""
     if f.court:
-        clauses.append(f"court_short = ANY(${idx}::text[])")
+        clauses.append(f"{prefix}court_short = ANY(${idx}::text[])")
         params.append(f.court)
         idx += 1
     if f.legal_domain:
-        clauses.append(f"legal_domain ILIKE ${idx}")
+        clauses.append(f"{prefix}legal_domain ILIKE ${idx}")
         params.append(f"%{f.legal_domain}%")
         idx += 1
     if f.is_auj is not None:
-        clauses.append(f"is_auj = ${idx}")
+        clauses.append(f"{prefix}is_auj = ${idx}")
         params.append(f.is_auj)
         idx += 1
     if f.date_from is not None:
-        clauses.append(f"decision_date >= ${idx}")
+        clauses.append(f"{prefix}decision_date >= ${idx}")
         params.append(f.date_from)
         idx += 1
     if f.date_to is not None:
-        clauses.append(f"decision_date <= ${idx}")
+        clauses.append(f"{prefix}decision_date <= ${idx}")
         params.append(f.date_to)
         idx += 1
     if f.decision_type:
-        clauses.append(f"metadata->>'decision_type' = ANY(${idx}::text[])")
+        clauses.append(f"{prefix}metadata->>'decision_type' = ANY(${idx}::text[])")
         params.append(f.decision_type)
         idx += 1
     if f.extraction_confidence:
-        clauses.append(f"metadata->>'extraction_confidence' = ANY(${idx}::text[])")
+        clauses.append(f"{prefix}metadata->>'extraction_confidence' = ANY(${idx}::text[])")
         params.append(f.extraction_confidence)
         idx += 1
     return " AND ".join(clauses), params
@@ -1271,27 +1281,34 @@ async def search_hybrid(
     over = req.limit * req.overfetch
     effective_filters = req.resolved_filters()
 
-    if vec_fields and use_fts:
-        per_vec, fts_hits = await asyncio.gather(
-            _search_vectors(sem_q, vec_fields, over, effective_filters),
-            _search_fts(kw_q, over, effective_filters),
-        )
-    elif vec_fields:
-        per_vec = await _search_vectors(sem_q, vec_fields, over, effective_filters)
-        fts_hits = []
-    else:
-        per_vec = {}
-        fts_hits = await _search_fts(kw_q, over, effective_filters)
+    try:
+        if vec_fields and use_fts:
+            per_vec, fts_hits = await asyncio.gather(
+                _search_vectors(sem_q, vec_fields, over, effective_filters),
+                _search_fts(kw_q, over, effective_filters),
+            )
+        elif vec_fields:
+            per_vec = await _search_vectors(sem_q, vec_fields, over, effective_filters)
+            fts_hits = []
+        else:
+            per_vec = {}
+            fts_hits = await _search_fts(kw_q, over, effective_filters)
 
-    per_source: dict[str, list[tuple[str, float]]] = dict(per_vec)
-    if use_fts:
-        per_source["fts"] = fts_hits
-    weights = {f: getattr(req.weights, f) for f in vec_fields}
-    if use_fts:
-        weights["fts"] = req.weights.fts
+        per_source: dict[str, list[tuple[str, float]]] = dict(per_vec)
+        if use_fts:
+            per_source["fts"] = fts_hits
+        weights = {f: getattr(req.weights, f) for f in vec_fields}
+        if use_fts:
+            weights["fts"] = req.weights.fts
 
-    merged, ranks = _rrf_merge_multi(per_source, weights, k=req.rrf_k)
-    docs = await _fetch_docs([d for d, _ in merged[:req.limit]])
+        merged, ranks = _rrf_merge_multi(per_source, weights, k=req.rrf_k)
+        docs = await _fetch_docs([d for d, _ in merged[:req.limit]])
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            504,
+            "Database query timed out. Try adding courts/date filters, lowering limit, "
+            "or disabling one search source via weights.",
+        ) from exc
     results = _build_results(merged, docs, per_source, ranks,
                              req.limit, include_hybrid=True)
     sources_used = [*vec_fields] + (["fts"] if use_fts else [])
@@ -1628,6 +1645,152 @@ def _article_condition(
         sql = gin_sql
 
     return sql, params, idx
+
+
+def _citation_ref_select(
+    law: str, article_prefix: Optional[str], match_key: int, start_idx: int
+) -> tuple[str, list[Any], int]:
+    """Build one indexed lookup-table SELECT for a law/article constraint."""
+    clauses = [f"c.law = ${start_idx}"]
+    params: list[Any] = [law]
+    idx = start_idx + 1
+    if article_prefix:
+        clauses.append(f"c.article LIKE ${idx}")
+        params.append(article_prefix + "%")
+        idx += 1
+    sql = (
+        f"SELECT c.doc_id, {match_key} AS match_key "
+        f"FROM {LEGISLATION_CITATIONS_TABLE} c "
+        f"WHERE {' AND '.join(clauses)}"
+    )
+    return sql, params, idx
+
+
+def _build_legislation_lookup_query(
+    refs: list[tuple[str, Optional[str]]],
+    match: Literal["any", "all"],
+    filters: Optional[Filters],
+    limit: int,
+    offset: int,
+) -> tuple[str, list[Any]]:
+    """Build fast legislation search SQL using the normalized citation table.
+
+    The CTE first resolves matching doc_ids from the narrow lookup table, ranks
+    ids with filters applied, then hydrates full document metadata only for the
+    requested page. That avoids TOAST-heavy reads of documents.metadata for
+    every document citing popular codes.
+    """
+    if not refs:
+        raise ValueError("refs must not be empty")
+
+    params: list[Any] = []
+    next_idx = 1
+    selects: list[str] = []
+    for match_key, (law, article) in enumerate(refs, start=1):
+        select_sql, select_params, next_idx = _citation_ref_select(
+            law, article, match_key, next_idx
+        )
+        selects.append(select_sql)
+        params.extend(select_params)
+
+    if match == "all":
+        matched_doc_ids = (
+            "SELECT doc_id FROM matched "
+            f"GROUP BY doc_id HAVING COUNT(DISTINCT match_key) = {len(refs)}"
+        )
+    else:
+        matched_doc_ids = "SELECT DISTINCT doc_id FROM matched"
+
+    filt_sql, filt_params = _build_filters(filters, start_idx=next_idx, alias="d")
+    params.extend(filt_params)
+    next_idx += len(filt_params)
+    limit_idx = next_idx
+    offset_idx = next_idx + 1
+    params.extend([limit, offset])
+
+    where_clause = f"WHERE {filt_sql}" if filt_sql else ""
+    sql = (
+        "WITH matched AS ("
+        + " UNION ALL ".join(selects)
+        + "), matched_doc_ids AS ("
+        + matched_doc_ids
+        + "), ranked_doc_ids AS ("
+        "  SELECT d.doc_id, d.decision_date "
+        "  FROM matched_doc_ids m "
+        "  JOIN documents d ON d.doc_id = m.doc_id "
+        f"  {where_clause} "
+        "  ORDER BY d.decision_date DESC NULLS LAST "
+        f"  LIMIT ${limit_idx} OFFSET ${offset_idx}"
+        ") "
+        f"SELECT {_qualified_doc_columns('d')} "
+        "FROM ranked_doc_ids r "
+        "JOIN documents d ON d.doc_id = r.doc_id "
+        "ORDER BY r.decision_date DESC NULLS LAST"
+    )
+    return sql, params
+
+
+def _build_legislation_legacy_query(
+    refs: list[tuple[str, Optional[str]]],
+    match: Literal["any", "all"],
+    filters: Optional[Filters],
+    limit: int,
+    offset: int,
+) -> tuple[str, list[Any]]:
+    """Build the pre-migration JSONB legislation search SQL as a fallback."""
+    filt_sql, filt_params = _build_filters(filters, start_idx=1)
+    all_params: list[Any] = list(filt_params)
+    next_idx = len(filt_params) + 1
+    conditions: list[str] = []
+
+    for law, article in refs:
+        cond_sql, cond_params, next_idx = _article_condition(law, article, next_idx)
+        conditions.append(cond_sql)
+        all_params.extend(cond_params)
+
+    joiner = " OR " if match == "any" else " AND "
+    where_parts = [p for p in (filt_sql, "(" + joiner.join(conditions) + ")") if p]
+    limit_idx = next_idx
+    offset_idx = next_idx + 1
+    all_params.extend([limit, offset])
+
+    sql = (
+        f"SELECT {DOC_COLUMNS} FROM documents "
+        f"WHERE {' AND '.join(where_parts)} "
+        f"ORDER BY decision_date DESC NULLS LAST "
+        f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
+    )
+    return sql, all_params
+
+
+async def _fetch_legislation_documents(
+    refs: list[tuple[str, Optional[str]]],
+    match: Literal["any", "all"],
+    filters: Optional[Filters],
+    limit: int,
+    offset: int,
+    timeout: float = 50,
+) -> list[asyncpg.Record]:
+    """Fetch docs via normalized citations table, falling back before migration.
+
+    todo: remove the legacy fallback after the lookup table is deployed and
+    verified in production.
+    """
+    lookup_sql, lookup_params = _build_legislation_lookup_query(
+        refs, match, filters, limit, offset
+    )
+    legacy_sql, legacy_params = _build_legislation_legacy_query(
+        refs, match, filters, limit, offset
+    )
+    async with db_pool.acquire() as conn:
+        try:
+            return await conn.fetch(lookup_sql, *lookup_params, timeout=timeout)
+        except asyncpg.UndefinedTableError:
+            logger.warning(
+                "%s missing; falling back to slow JSONB legislation search",
+                LEGISLATION_CITATIONS_TABLE,
+            )
+            return await conn.fetch(legacy_sql, *legacy_params, timeout=timeout)
 
 
 class ArticleRef(BaseModel):
@@ -1967,50 +2130,18 @@ async def search_legislation(
     if not normalized:
         raise HTTPException(400, "No valid article references provided.")
 
-    # 2. Build SQL WHERE clause.
     effective_filters = req.resolved_filters()
-    filt_sql, filt_params = _build_filters(effective_filters, start_idx=1)
-
-    all_params: list[Any] = list(filt_params)
-    next_idx = len(filt_params) + 1
-    conditions: list[str] = []
-
-    for ref in normalized:
-        cond_sql, cond_params, next_idx = _article_condition(
-            ref.law, ref.article, next_idx
+    refs = [(ref.law, ref.article) for ref in normalized]
+    try:
+        rows = await _fetch_legislation_documents(
+            refs, req.match, effective_filters, req.limit, req.offset, timeout=50
         )
-        conditions.append(cond_sql)
-        all_params.extend(cond_params)
-
-    joiner = " OR " if req.match == "any" else " AND "
-    article_clause = "(" + joiner.join(conditions) + ")"
-
-    where_parts: list[str] = []
-    if filt_sql:
-        where_parts.append(filt_sql)
-    where_parts.append(article_clause)
-    where_clause = " AND ".join(where_parts)
-
-    limit_idx = next_idx
-    offset_idx = next_idx + 1
-    all_params.extend([req.limit, req.offset])
-
-    sql = (
-        f"SELECT {DOC_COLUMNS} FROM documents "
-        f"WHERE {where_clause} "
-        f"ORDER BY decision_date DESC NULLS LAST "
-        f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
-    )
-
-    async with db_pool.acquire() as conn:
-        try:
-            rows = await conn.fetch(sql, *all_params, timeout=50)
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(
-                504,
-                "Database query timed out. The law requested is cited in many documents; "
-                "try adding filters (courts, date range) or narrowing the article.",
-            ) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            504,
+            "Database query timed out. The law requested is cited in many documents; "
+            "try adding filters (courts, date range) or narrowing the article.",
+        ) from exc
 
     results = [SearchResult(**_row_to_dict(r)) for r in rows]
 
@@ -2121,52 +2252,22 @@ async def search_legislation_semantic(
         candidate_models[0].selected = True
         candidate_models[0].reason = "Fallback: top similarity match"
 
-    # 4. Build document query for selected legislation using fast exact-match @> via GIN
+    # 4. Fetch documents through the normalized citation lookup table.
     effective_filters = req.resolved_filters()
-    filt_sql, filt_params = _build_filters(effective_filters, start_idx=1)
-    all_params: list[Any] = list(filt_params)
-    next_idx = len(filt_params) + 1
-    conditions: list[str] = []
-
-    for idx in selected_indices:
-        leg = leg_rows[idx]
-        law = leg["law"]
-        article = leg["article"]
-        match_obj: dict[str, Any] = {"legislation_cited": [{"law": law}]}
-        if article and article.strip():
-            match_obj["legislation_cited"][0]["article"] = article.strip()
-        conditions.append(f"metadata @> ${next_idx}::jsonb")
-        all_params.append(_json.dumps(match_obj))
-        next_idx += 1
-
-    article_clause = "(" + " OR ".join(conditions) + ")"
-
-    where_parts: list[str] = []
-    if filt_sql:
-        where_parts.append(filt_sql)
-    where_parts.append(article_clause)
-    where_clause = " AND ".join(where_parts)
-
-    limit_idx = next_idx
-    offset_idx = next_idx + 1
-    all_params.extend([req.limit, req.offset])
-
-    sql = (
-        f"SELECT {DOC_COLUMNS} FROM documents "
-        f"WHERE {where_clause} "
-        f"ORDER BY decision_date DESC NULLS LAST "
-        f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
-    )
-
-    async with db_pool.acquire() as conn:
-        try:
-            rows = await conn.fetch(sql, *all_params, timeout=50)
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(
-                504,
-                "Database query timed out. The selected legislation is cited in many documents; "
-                "try adding filters (courts, date range) or narrowing the query.",
-            ) from exc
+    selected_refs = [
+        (leg_rows[idx]["law"], leg_rows[idx]["article"])
+        for idx in sorted(selected_indices)
+    ]
+    try:
+        rows = await _fetch_legislation_documents(
+            selected_refs, "any", effective_filters, req.limit, req.offset, timeout=50
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            504,
+            "Database query timed out. The selected legislation is cited in many documents; "
+            "try adding filters (courts, date range) or narrowing the query.",
+        ) from exc
 
     results = [SearchResult(**_row_to_dict(r)) for r in rows]
 
