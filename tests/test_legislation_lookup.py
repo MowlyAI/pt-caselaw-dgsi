@@ -14,9 +14,11 @@ class LegislationLookupSqlTests(unittest.TestCase):
 
         self.assertIn("document_legislation_citations", sql)
         self.assertIn("ranked_doc_ids", sql)
+        self.assertIn("c.article <> ''", sql)
         self.assertIn("c.article LIKE $2", sql)
         self.assertIn("LIMIT $3 OFFSET $4", sql)
         self.assertEqual(params, ["Código Civil", "483.º%", 20, 0])
+        self.assertNotIn("JOIN documents d ON d.doc_id = m.doc_id", sql)
 
     def test_lookup_query_all_mode_counts_distinct_match_keys(self):
         sql, params = main._build_legislation_lookup_query(
@@ -49,9 +51,19 @@ class LegislationLookupSqlTests(unittest.TestCase):
             [("Código do Trabalho", "394.º")], "any", filters, 20, 0
         )
 
-        self.assertIn("d.court_short = ANY($3::text[])", sql)
-        self.assertIn("d.is_auj = $4", sql)
+        self.assertIn("c.court_short = ANY($3::text[])", sql)
+        self.assertIn("c.is_auj = $4", sql)
         self.assertEqual(params, ["Código do Trabalho", "394.º%", ["STJ"], True, 20, 0])
+
+    def test_lookup_query_uses_document_join_only_for_json_filters(self):
+        filters = main.Filters(decision_type=["Acórdão"])
+        sql, params = main._build_legislation_lookup_query(
+            [("Código Civil", "483.º")], "any", filters, 20, 0
+        )
+
+        self.assertIn("JOIN documents d ON d.doc_id = m.doc_id", sql)
+        self.assertIn("d.metadata->>'decision_type' = ANY($3::text[])", sql)
+        self.assertEqual(params, ["Código Civil", "483.º%", ["Acórdão"], 20, 0])
 
     def test_legacy_query_preserves_jsonb_fallback(self):
         sql, params = main._build_legislation_legacy_query(

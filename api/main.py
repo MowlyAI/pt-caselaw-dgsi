@@ -1647,19 +1647,82 @@ def _article_condition(
     return sql, params, idx
 
 
+def _build_citation_filters(
+    f: Optional[Filters], start_idx: int, alias: str = "c"
+) -> tuple[str, list[Any], int]:
+    """Build filters that are denormalized onto the citation lookup table."""
+    if f is None:
+        return "", [], start_idx
+    prefix = f"{alias}."
+    clauses: list[str] = []
+    params: list[Any] = []
+    idx = start_idx
+    if f.court:
+        clauses.append(f"{prefix}court_short = ANY(${idx}::text[])")
+        params.append(f.court)
+        idx += 1
+    if f.legal_domain:
+        clauses.append(f"{prefix}legal_domain ILIKE ${idx}")
+        params.append(f"%{f.legal_domain}%")
+        idx += 1
+    if f.is_auj is not None:
+        clauses.append(f"{prefix}is_auj = ${idx}")
+        params.append(f.is_auj)
+        idx += 1
+    if f.date_from is not None:
+        clauses.append(f"{prefix}decision_date >= ${idx}")
+        params.append(f.date_from)
+        idx += 1
+    if f.date_to is not None:
+        clauses.append(f"{prefix}decision_date <= ${idx}")
+        params.append(f.date_to)
+        idx += 1
+    return " AND ".join(clauses), params, idx
+
+
+def _build_document_json_filters(
+    f: Optional[Filters], start_idx: int, alias: str = "d"
+) -> tuple[str, list[Any], int]:
+    """Build document-only JSON metadata filters not present on citations."""
+    if f is None:
+        return "", [], start_idx
+    prefix = f"{alias}."
+    clauses: list[str] = []
+    params: list[Any] = []
+    idx = start_idx
+    if f.decision_type:
+        clauses.append(f"{prefix}metadata->>'decision_type' = ANY(${idx}::text[])")
+        params.append(f.decision_type)
+        idx += 1
+    if f.extraction_confidence:
+        clauses.append(f"{prefix}metadata->>'extraction_confidence' = ANY(${idx}::text[])")
+        params.append(f.extraction_confidence)
+        idx += 1
+    return " AND ".join(clauses), params, idx
+
+
 def _citation_ref_select(
-    law: str, article_prefix: Optional[str], match_key: int, start_idx: int
+    law: str,
+    article_prefix: Optional[str],
+    match_key: int,
+    start_idx: int,
+    filters: Optional[Filters],
 ) -> tuple[str, list[Any], int]:
     """Build one indexed lookup-table SELECT for a law/article constraint."""
     clauses = [f"c.law = ${start_idx}"]
     params: list[Any] = [law]
     idx = start_idx + 1
     if article_prefix:
+        clauses.append("c.article <> ''")
         clauses.append(f"c.article LIKE ${idx}")
         params.append(article_prefix + "%")
         idx += 1
+    filt_sql, filt_params, idx = _build_citation_filters(filters, idx, alias="c")
+    if filt_sql:
+        clauses.append(filt_sql)
+        params.extend(filt_params)
     sql = (
-        f"SELECT c.doc_id, {match_key} AS match_key "
+        f"SELECT c.doc_id, c.decision_date, {match_key} AS match_key "
         f"FROM {LEGISLATION_CITATIONS_TABLE} c "
         f"WHERE {' AND '.join(clauses)}"
     )
@@ -1688,38 +1751,46 @@ def _build_legislation_lookup_query(
     selects: list[str] = []
     for match_key, (law, article) in enumerate(refs, start=1):
         select_sql, select_params, next_idx = _citation_ref_select(
-            law, article, match_key, next_idx
+            law, article, match_key, next_idx, filters
         )
         selects.append(select_sql)
         params.extend(select_params)
 
     if match == "all":
         matched_doc_ids = (
-            "SELECT doc_id FROM matched "
+            "SELECT doc_id, MAX(decision_date) AS decision_date FROM matched "
             f"GROUP BY doc_id HAVING COUNT(DISTINCT match_key) = {len(refs)}"
         )
     else:
-        matched_doc_ids = "SELECT DISTINCT doc_id FROM matched"
+        matched_doc_ids = (
+            "SELECT doc_id, MAX(decision_date) AS decision_date FROM matched "
+            "GROUP BY doc_id"
+        )
 
-    filt_sql, filt_params = _build_filters(filters, start_idx=next_idx, alias="d")
-    params.extend(filt_params)
-    next_idx += len(filt_params)
+    doc_filter_sql, doc_filter_params, next_idx = _build_document_json_filters(
+        filters, next_idx, alias="d"
+    )
+    params.extend(doc_filter_params)
     limit_idx = next_idx
     offset_idx = next_idx + 1
     params.extend([limit, offset])
-
-    where_clause = f"WHERE {filt_sql}" if filt_sql else ""
+    if doc_filter_sql:
+        ranked_source = (
+            "  SELECT m.doc_id, m.decision_date "
+            "  FROM matched_doc_ids m "
+            "  JOIN documents d ON d.doc_id = m.doc_id "
+            f"  WHERE {doc_filter_sql} "
+        )
+    else:
+        ranked_source = "  SELECT m.doc_id, m.decision_date FROM matched_doc_ids m "
     sql = (
         "WITH matched AS ("
         + " UNION ALL ".join(selects)
         + "), matched_doc_ids AS ("
         + matched_doc_ids
         + "), ranked_doc_ids AS ("
-        "  SELECT d.doc_id, d.decision_date "
-        "  FROM matched_doc_ids m "
-        "  JOIN documents d ON d.doc_id = m.doc_id "
-        f"  {where_clause} "
-        "  ORDER BY d.decision_date DESC NULLS LAST "
+        + ranked_source
+        + "  ORDER BY m.decision_date DESC NULLS LAST "
         f"  LIMIT ${limit_idx} OFFSET ${offset_idx}"
         ") "
         f"SELECT {_qualified_doc_columns('d')} "
