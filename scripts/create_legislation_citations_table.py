@@ -1,13 +1,14 @@
-"""Create and backfill document_legislation_citations in batches.
+"""Create and backfill document_legislation_citations in date batches.
 
 Run from the repo root after configuring database env vars:
-    python scripts/create_legislation_citations_table.py --batch-size 5000
+    python scripts/create_legislation_citations_table.py --start-year 1932 --end-year 2026
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import os
+from collections.abc import Iterable
 
 import asyncpg
 from dotenv import load_dotenv
@@ -43,8 +44,33 @@ FROM public.documents d
 CROSS JOIN LATERAL jsonb_array_elements(
     COALESCE(d.metadata->'legislation_cited', '[]'::jsonb)
 ) AS el
-WHERE d.id > $1
-  AND d.id <= $2
+WHERE d.decision_date >= $1::date
+  AND d.decision_date < $2::date
+  AND NULLIF(btrim(el->>'law'), '') IS NOT NULL
+ON CONFLICT (doc_id, law, article) DO UPDATE SET
+    decision_date = EXCLUDED.decision_date,
+    court_short = EXCLUDED.court_short,
+    is_auj = EXCLUDED.is_auj,
+    legal_domain = EXCLUDED.legal_domain
+"""
+
+BACKFILL_NULL_DATES_SQL = """
+INSERT INTO public.document_legislation_citations (
+    doc_id, law, article, decision_date, court_short, is_auj, legal_domain
+)
+SELECT DISTINCT
+    d.doc_id,
+    btrim(el->>'law') AS law,
+    COALESCE(NULLIF(btrim(el->>'article'), ''), '') AS article,
+    d.decision_date,
+    d.court_short,
+    d.is_auj,
+    d.legal_domain
+FROM public.documents d
+CROSS JOIN LATERAL jsonb_array_elements(
+    COALESCE(d.metadata->'legislation_cited', '[]'::jsonb)
+) AS el
+WHERE d.decision_date IS NULL
   AND NULLIF(btrim(el->>'law'), '') IS NOT NULL
 ON CONFLICT (doc_id, law, article) DO UPDATE SET
     decision_date = EXCLUDED.decision_date,
@@ -74,7 +100,9 @@ INDEX_SQL = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batch-size", type=int, default=5000)
+    parser.add_argument("--start-year", type=int, default=1932)
+    parser.add_argument("--end-year", type=int, default=2026)
+    parser.add_argument("--skip-null-dates", action="store_true")
     return parser.parse_args()
 
 
@@ -91,13 +119,19 @@ async def connect() -> asyncpg.Connection:
     )
 
 
-async def backfill(conn: asyncpg.Connection, batch_size: int) -> None:
-    max_id = await conn.fetchval("SELECT COALESCE(max(id), 0) FROM public.documents")
+def year_ranges(start_year: int, end_year: int) -> Iterable[tuple[str, str]]:
+    for year in range(start_year, end_year + 1):
+        yield f"{year}-01-01", f"{year + 1}-01-01"
+
+
+async def backfill(conn: asyncpg.Connection, args: argparse.Namespace) -> None:
     await conn.execute(TABLE_SQL)
-    for start in range(0, max_id, batch_size):
-        end = start + batch_size
-        status = await conn.execute(BACKFILL_SQL, start, end)
-        print(f"Backfilled documents id ({start}, {end}]: {status}")
+    if not args.skip_null_dates:
+        status = await conn.execute(BACKFILL_NULL_DATES_SQL)
+        print(f"Backfilled documents with null decision_date: {status}")
+    for start_date, end_date in year_ranges(args.start_year, args.end_year):
+        status = await conn.execute(BACKFILL_SQL, start_date, end_date)
+        print(f"Backfilled documents [{start_date}, {end_date}): {status}")
 
 
 async def create_indexes(conn: asyncpg.Connection) -> None:
@@ -110,7 +144,7 @@ async def main() -> None:
     args = parse_args()
     conn = await connect()
     try:
-        await backfill(conn, args.batch_size)
+        await backfill(conn, args)
         await create_indexes(conn)
     finally:
         await conn.close()
