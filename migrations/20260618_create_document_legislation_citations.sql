@@ -6,6 +6,10 @@
 --   heap/TOAST reads before sorting. This table stores one narrow row per
 --   cited law/article/document so search can resolve doc_ids first and hydrate
 --   only the requested page of documents.
+--
+-- Backfill data with scripts/create_legislation_citations_table.py. The backfill
+-- is intentionally separated from schema creation so it can run in bounded
+-- decision_date batches on production-sized databases.
 
 CREATE TABLE IF NOT EXISTS public.document_legislation_citations (
     doc_id text NOT NULL REFERENCES public.documents(doc_id) ON DELETE CASCADE,
@@ -18,34 +22,6 @@ CREATE TABLE IF NOT EXISTS public.document_legislation_citations (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (doc_id, law, article)
 );
-
-INSERT INTO public.document_legislation_citations (
-    doc_id,
-    law,
-    article,
-    decision_date,
-    court_short,
-    is_auj,
-    legal_domain
-)
-SELECT DISTINCT
-    d.doc_id,
-    btrim(el->>'law') AS law,
-    COALESCE(NULLIF(btrim(el->>'article'), ''), '') AS article,
-    d.decision_date,
-    d.court_short,
-    d.is_auj,
-    d.legal_domain
-FROM public.documents d
-CROSS JOIN LATERAL jsonb_array_elements(
-    COALESCE(d.metadata->'legislation_cited', '[]'::jsonb)
-) AS el
-WHERE NULLIF(btrim(el->>'law'), '') IS NOT NULL
-ON CONFLICT (doc_id, law, article) DO UPDATE SET
-    decision_date = EXCLUDED.decision_date,
-    court_short = EXCLUDED.court_short,
-    is_auj = EXCLUDED.is_auj,
-    legal_domain = EXCLUDED.legal_domain;
 
 CREATE INDEX IF NOT EXISTS idx_doc_leg_citations_law_date
 ON public.document_legislation_citations (law, decision_date DESC, doc_id);
