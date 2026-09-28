@@ -124,20 +124,20 @@ async def lifespan(app: FastAPI):
 
 
 API_DESCRIPTION = """
-Hybrid search over Portuguese court decisions (DGSI: STJ, STA, STJ, TR*, TCA*, TC, …).
+Hybrid search over Portuguese court decisions (DGSI: STJ, STA, TR*, TCA*, TC, JP, …).
 
 ## How to use this API (for LLM agents)
 
 The intended workflow is:
 
 1. **Discover what you can filter on** with `GET /filters`. This returns the
-   list of supported filter fields and the available values (courts, decision
-   types, top legal domains, date range, …). Use this to ground any filter you
-   later send.
-2. **Search** with `POST /search` (recommended), `POST /search/semantic` or
-   `POST /search/fts`. Always prefer `POST /search` unless you have a strong
-   reason — it fuses 3 vector representations and full-text search into one
-   ranking.
+   available `court_short` codes with document counts, the corpus date range,
+   and AUJ vs non-AUJ counts. Use this to ground any filter you later send.
+2. **Search** with `POST /search` — it fuses 3 vector representations and
+   full-text search into one ranking. To find decisions that cite specific
+   legislation instead, use `POST /search/legislation` (exact article
+   references) or `POST /search/legislation/semantic` (free-form law
+   queries with LLM reranking).
 3. **Hydrate** a specific decision with `GET /document/{doc_id}` to retrieve
    the full extracted metadata (parties, citations, ratio decidendi, …).
 
@@ -162,16 +162,21 @@ so you can audit *why* a doc was returned.
 
 ## Choosing semantic vs keyword text
 
-`SearchRequest` accepts two strings:
+`SearchRequest` accepts two query inputs:
 
 * `q_semantic` — natural-language description of what you're looking for
   (e.g. *"despedimento sem justa causa por uso indevido de email corporativo"*).
   This is what gets embedded.
-* `q_keywords` — terse keyword query for FTS (e.g. *"despedimento email
-  corporativo"*). Supports `websearch_to_tsquery` syntax (quoted phrases,
-  `-exclusion`, `OR`).
+* `q_keywords` — list of keywords for FTS (e.g. `["despedimento", "email",
+  "corporativo"]`), matched with AND logic. Each entry supports
+  `websearch_to_tsquery` syntax (quoted phrases, `-exclusion`, `OR`).
 
-If you only have one string, send it as `q` and both sides will use it.
+There is no shared fallback field: under the default weights both vector
+search and FTS are enabled, so `q_semantic` and `q_keywords` are each
+required for their respective sources (a missing one returns 400). If you
+only have one string, send it as `q_semantic` and disable FTS with
+`{"weights": {"fts": 0}}` — or split it yourself: full phrasing in
+`q_semantic`, key terms in `q_keywords`.
 
 ## Filters
 
@@ -230,8 +235,9 @@ See the `Filters` schema for every supported field.
 
 OPENAPI_TAGS = [
     {"name": "search", "description":
-        "Hybrid / semantic / keyword search over the corpus. All endpoints "
-        "are POST and accept the same `SearchRequest` body."},
+        "Search over the corpus: `POST /search` (hybrid vector + keyword, "
+        "body: `SearchRequest`) and the `/search/legislation*` endpoints "
+        "(decisions citing given statutes, their own request schemas)."},
     {"name": "info", "description":
         "Discovery endpoints: list available filters, corpus stats."},
     {"name": "documents", "description":
@@ -781,7 +787,7 @@ class SearchResponse(BaseModel):
         examples=[["embedding", "embedding_context", "embedding_ratio", "fts"]],
     )
     mode: str = Field(
-        description="Endpoint that produced the response: `hybrid`, `semantic` or `fts`.",
+        description="Search mode that produced the response. Currently always `hybrid`.",
         examples=["hybrid"],
     )
     filters: Optional[Filters] = Field(
@@ -1267,7 +1273,8 @@ def _build_results(
         "```\nhybrid_score(d) = Σ_source  weight[source] / (rrf_k + rank_source(d))\n```\n\n"
         "**Best practices:**\n\n"
         "- Supply **both** `q_semantic` and `q_keywords` for maximum recall. "
-        "Omitting either disables that source.\n"
+        "Under the default weights both are required — a missing one returns "
+        "400; disable a source explicitly via `weights` instead.\n"
         "- Write `q_semantic` as a full legal sentence or question: "
         "`'despedimento sem justa causa por uso indevido de email corporativo'` "
         "outperforms `'despedimento email'`.\n"
