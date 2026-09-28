@@ -4,6 +4,10 @@ Uses Supabase Postgres directly via asyncpg:
   * HNSW indexes on `embedding` / `embedding_context` / `embedding_ratio`
     (halfvec_cosine_ops) for vector search.
   * GIN index on `fts` (tsvector built with unaccent + portuguese) for FTS.
+  * B-tree expression indexes on `metadata->>'decision_type'` and
+    `metadata->>'extraction_confidence'` so the planner has real selectivity
+    statistics for jsonb filters (without them, the 0.5% default estimate
+    made filtered vector queries take the exact-sort path — 30s+ timeouts).
 """
 import asyncio
 import json as _json
@@ -46,6 +50,20 @@ DB_NAME = os.getenv("SUPABASE_DB_NAME", "postgres")
 
 # HNSW search-time recall/speed tradeoff. 40 is a good default; raise for recall.
 HNSW_EF_SEARCH = int(os.getenv("HNSW_EF_SEARCH", "40"))
+# Iterative scan mode for filtered HNSW queries (pgvector >= 0.8).
+# "strict_order" keeps walking the graph until LIMIT rows match the filters —
+# exact ordering but UNBOUNDED: an anti-correlated filter/query combination can
+# walk the whole graph and hit the 30s statement timeout. "relaxed_order" stops
+# at hnsw.max_scan_tuples, trading a small chance of fewer-than-LIMIT results
+# for a hard latency bound — the right posture for a client-facing API.
+_HNSW_ITERATIVE_MODES = ("off", "strict_order", "relaxed_order")
+HNSW_ITERATIVE_SCAN = os.getenv("HNSW_ITERATIVE_SCAN", "relaxed_order")
+if HNSW_ITERATIVE_SCAN not in _HNSW_ITERATIVE_MODES:
+    raise ValueError(
+        f"HNSW_ITERATIVE_SCAN must be one of {_HNSW_ITERATIVE_MODES}, "
+        f"got {HNSW_ITERATIVE_SCAN!r}"
+    )
+HNSW_MAX_SCAN_TUPLES = int(os.getenv("HNSW_MAX_SCAN_TUPLES", "20000"))
 
 EMBEDDING_FIELDS: tuple[str, ...] = ("embedding", "embedding_context", "embedding_ratio")
 ALL_SOURCES: tuple[str, ...] = (*EMBEDDING_FIELDS, "fts")
@@ -68,12 +86,17 @@ http_client: Optional[httpx.AsyncClient] = None
 
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
-    """Per-connection setup: tune HNSW ef_search and enable iterative scan
-    so filtered semantic queries still return enough results."""
+    """Per-connection setup: tune HNSW ef_search and iterative scan so
+    filtered semantic queries stay fast and latency-bounded."""
     await conn.execute(f"SET hnsw.ef_search = {HNSW_EF_SEARCH}")
     # pgvector >= 0.8: keep walking the HNSW graph when WHERE filters
-    # would otherwise leave the LIMIT under-filled.
-    await conn.execute("SET hnsw.iterative_scan = strict_order")
+    # would otherwise leave the LIMIT under-filled — but cap the walk so a
+    # pathological filter/query combo degrades to fewer results instead of
+    # a full-graph scan that blows the 30s statement timeout.
+    # (HNSW_ITERATIVE_SCAN is validated against a whitelist at import time.)
+    await conn.execute(f"SET hnsw.iterative_scan = {HNSW_ITERATIVE_SCAN}")
+    if HNSW_ITERATIVE_SCAN != "off":
+        await conn.execute(f"SET hnsw.max_scan_tuples = {HNSW_MAX_SCAN_TUPLES}")
 
 
 @asynccontextmanager
