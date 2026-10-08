@@ -97,6 +97,7 @@ MAX_RETRIES = 5
 RETRY_BACKOFF_BASE = 2.0
 MAX_CHUNK_SIZE_MB = 80  # Max JSON file size before splitting
 DOCS_PER_CHUNK = 15000  # Approx docs per output file
+LISTING_PAGE_SIZE = 1000  # View entries per listing page (DGSI default is 100)
 
 # Encoding
 ENCODING = "windows-1252"  # DGSI uses cp1252 / latin-1

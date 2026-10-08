@@ -10,6 +10,7 @@ CLI:
     python -m scraper.runner --db STJ       # single DB
     python -m scraper.runner --concurrency 80
     python -m scraper.runner --reset
+    python -m scraper.runner --refresh      # incremental: pick up new docs
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from rich.progress import (
 )
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from scraper.config import BASE_URL, DATABASES, DOCS_PER_CHUNK
+from scraper.config import BASE_URL, DATABASES, DOCS_PER_CHUNK, LISTING_PAGE_SIZE
 from scraper.scraper import (
     DATA_DIR, STATE_FILE, decode_content, fetch_with_retry,
     get_doc_links_from_page, parse_document,
@@ -109,7 +110,8 @@ async def scrape_database(
     progress.update(task_id, completed=len(scraped_ids))
 
     writer = ChunkWriter(db_short)
-    start_url = f"{BASE_URL}/{db_name}/{db_config['view_id']}?OpenView&Start=1"
+    start_url = (f"{BASE_URL}/{db_name}/{db_config['view_id']}"
+                 f"?OpenView&Start=1&Count={LISTING_PAGE_SIZE}")
     current_url = state["db_progress"].get(db_name, start_url)
 
     async def fetch_doc(url: str):
@@ -143,7 +145,8 @@ async def scrape_database(
             state["db_progress"][db_name] = next_url or current_url
             save_state(state)
 
-        if not next_url:
+        # DGSI's last listing page links "next" back to itself.
+        if not next_url or next_url == current_url:
             break
         current_url = next_url
 
@@ -183,9 +186,12 @@ async def run_all(
 @click.command()
 @click.option("--db", default=None, help="Only scrape specific DB (short name)")
 @click.option("--reset", is_flag=True, help="Reset state and start from scratch")
+@click.option("--refresh", is_flag=True,
+              help="Re-walk listings from the start to pick up new docs "
+                   "(keeps scraped_doc_ids, so known docs are skipped)")
 @click.option("--concurrency", default=80, type=int,
               help="Global max concurrent HTTP connections across all DBs")
-def main(db: Optional[str], reset: bool, concurrency: int):
+def main(db: Optional[str], reset: bool, refresh: bool, concurrency: int):
     """DGSI caselaw scraper — fetches Portuguese court decisions in parallel."""
     if reset and STATE_FILE.exists():
         STATE_FILE.unlink()
@@ -195,6 +201,11 @@ def main(db: Optional[str], reset: bool, concurrency: int):
     state.setdefault("completed_dbs", [])
     state.setdefault("scraped_doc_ids", {})
     state.setdefault("db_progress", {})
+
+    if refresh:
+        state["completed_dbs"] = []
+        state["db_progress"] = {}
+        console.print("[yellow]Refresh: re-walking all listings from the start.[/yellow]")
 
     dbs_to_scrape = DATABASES
     if db:
