@@ -118,11 +118,12 @@ async def main():
     print('Extracting unique legislation via temp table...')
     await conn.execute("SET statement_timeout = '300000'")
     await conn.execute("DROP TABLE IF EXISTS tmp_leg_uniq")
+    # Source pairs from the narrow citations table rather than scanning every
+    # document's TOASTed metadata (~13 GB) — same pairs the API looks up.
     await conn.execute("""
         CREATE TEMP TABLE tmp_leg_uniq AS
-        SELECT DISTINCT l->>'law' as law, l->>'article' as article
-        FROM documents, jsonb_array_elements(metadata->'legislation_cited') AS l
-        WHERE l->>'law' IS NOT NULL AND l->>'law' != ''
+        SELECT DISTINCT law, NULLIF(article, '') AS article
+        FROM document_legislation_citations
     """)
     total_uniq = await conn.fetchval("SELECT COUNT(*) FROM tmp_leg_uniq")
     print(f'Total unique legislation pairs: {total_uniq}')

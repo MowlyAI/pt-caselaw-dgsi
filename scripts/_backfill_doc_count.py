@@ -1,8 +1,15 @@
 """Backfill doc_count in legislation_embeddings.
 
-Strategy: process one law at a time using the GIN index on metadata to
-quickly find documents that cite each law, avoiding a full-table scan.
-This keeps each query fast and avoids statement timeouts.
+Strategy: count citing documents per (law, article) once from the narrow
+document_legislation_citations table into a temp table, then update
+legislation_embeddings in committed id-range batches. The previous per-law
+approach scanned TOASTed documents.metadata once per law and never finished
+on a small instance (~72% of rows were left at doc_count = 0).
+
+Batches matter: heap pages are full, so updates are not HOT and every changed
+row is re-inserted into all indexes, including the HNSW index. A single
+statement over ~260k rows risks hitting the timeout and rolling back.
+Rows with no match in the citations table keep their existing value.
 """
 import asyncio
 import os
@@ -13,6 +20,25 @@ from dotenv import load_dotenv
 
 load_dotenv('.env.local')
 
+BATCH_IDS = 10_000
+
+COUNTS_SQL = """
+CREATE TEMP TABLE tmp_doc_counts AS
+SELECT law, article, COUNT(*) AS cnt
+FROM document_legislation_citations
+GROUP BY law, article
+"""
+
+UPDATE_SQL = """
+UPDATE legislation_embeddings e
+SET doc_count = c.cnt
+FROM tmp_doc_counts c
+WHERE e.id >= $1 AND e.id < $2
+  AND e.law = c.law
+  AND COALESCE(e.article, '') = c.article
+  AND e.doc_count IS DISTINCT FROM c.cnt
+"""
+
 
 async def main() -> None:
     conn = await asyncpg.connect(
@@ -21,58 +47,35 @@ async def main() -> None:
         user=os.getenv('SUPABASE_DB_USER'),
         password=os.getenv('SUPABASE_DB_PASSWORD'),
         database=os.getenv('SUPABASE_DB_NAME', 'postgres'),
-        command_timeout=300,  # 5 min per query
+        statement_cache_size=0,
+        command_timeout=1800,
     )
-    await conn.execute("SET statement_timeout = '300000'")  # 5 min
+    await conn.execute("SET statement_timeout = '1800s'")
 
-    # 1. Get all distinct laws in legislation_embeddings
-    laws = [r['law'] for r in await conn.fetch(
-        "SELECT DISTINCT law FROM legislation_embeddings ORDER BY law"
-    )]
-    print(f"Found {len(laws)} distinct laws to process")
+    before = await conn.fetchval(
+        "SELECT COUNT(*) FROM legislation_embeddings WHERE COALESCE(doc_count, 0) = 0"
+    )
+    print(f"Rows with doc_count = 0 before: {before}", flush=True)
 
-    total_updated = 0
     t0 = time.time()
+    await conn.execute(COUNTS_SQL)
+    await conn.execute("CREATE INDEX ON tmp_doc_counts (law, article)")
+    await conn.execute("ANALYZE tmp_doc_counts")
+    print(f"Counted citations in {time.time() - t0:.0f}s", flush=True)
 
-    for i, law in enumerate(laws, 1):
-        # Use GIN index to get documents citing this law, then count per article
-        counts = await conn.fetch(
-            """
-            SELECT l->>'article' AS article, COUNT(*) AS cnt
-            FROM documents,
-                 jsonb_array_elements(metadata->'legislation_cited') AS l
-            WHERE metadata @> jsonb_build_object(
-                    'legislation_cited', jsonb_build_array(jsonb_build_object('law', $1::text))
-                  )
-              AND l->>'law' = $1
-            GROUP BY l->>'article'
-            """,
-            law,
-        )
+    max_id = await conn.fetchval("SELECT MAX(id) FROM legislation_embeddings")
+    total = 0
+    for start in range(0, max_id + 1, BATCH_IDS):
+        status = await conn.execute(UPDATE_SQL, start, start + BATCH_IDS)
+        total += int(status.split()[-1])
+        print(f"  ids [{start}, {start + BATCH_IDS}): {status} — "
+              f"{total} updated, {time.time() - t0:.0f}s elapsed", flush=True)
 
-        if not counts:
-            continue
+    after = await conn.fetchval(
+        "SELECT COUNT(*) FROM legislation_embeddings WHERE COALESCE(doc_count, 0) = 0"
+    )
+    print(f"\nDone: {total} rows updated. Rows with doc_count = 0 after: {after}")
 
-        # Bulk-update all articles for this law
-        for row in counts:
-            article = row['article'] if row['article'] and row['article'].strip() else None
-            await conn.execute(
-                """
-                UPDATE legislation_embeddings
-                SET doc_count = $1
-                WHERE law = $2 AND article IS NOT DISTINCT FROM $3
-                """,
-                row['cnt'], law, article,
-            )
-            total_updated += 1
-
-        elapsed = time.time() - t0
-        print(f"  [{i}/{len(laws)}] {law!r}: {len(counts)} articles updated — "
-              f"{total_updated} total, {elapsed:.0f}s elapsed")
-
-    print(f"\nDone: {total_updated} rows updated in {time.time() - t0:.0f}s")
-
-    # Show top 10 most-cited after update
     rows = await conn.fetch(
         "SELECT law, article, doc_count FROM legislation_embeddings "
         "ORDER BY doc_count DESC NULLS LAST LIMIT 10"

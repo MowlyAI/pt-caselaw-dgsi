@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import os
 from collections.abc import Iterable
+from datetime import datetime
 
 import asyncpg
 from dotenv import load_dotenv
@@ -79,6 +80,15 @@ ON CONFLICT (doc_id, law, article) DO UPDATE SET
     legal_domain = EXCLUDED.legal_domain
 """
 
+# Incremental variant: only documents (re)written since a given timestamp,
+# one court at a time to keep each statement bounded.
+BACKFILL_UPDATED_SQL = BACKFILL_SQL.replace(
+    """WHERE d.decision_date >= $1::date
+  AND d.decision_date < $2::date""",
+    """WHERE d.updated_at >= $1::timestamptz
+  AND d.court_short = $2""",
+)
+
 INDEX_SQL = [
     """
     CREATE INDEX IF NOT EXISTS idx_doc_leg_citations_law_date
@@ -103,6 +113,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-year", type=int, default=1932)
     parser.add_argument("--end-year", type=int, default=2026)
     parser.add_argument("--skip-null-dates", action="store_true")
+    parser.add_argument(
+        "--updated-since", type=datetime.fromisoformat, default=None,
+        help="Incremental mode: only documents with updated_at >= this "
+             "timestamp (e.g. 2026-10-08), ignoring the year range",
+    )
     return parser.parse_args()
 
 
@@ -126,6 +141,15 @@ def year_ranges(start_year: int, end_year: int) -> Iterable[tuple[str, str]]:
 
 async def backfill(conn: asyncpg.Connection, args: argparse.Namespace) -> None:
     await conn.execute(TABLE_SQL)
+    if args.updated_since:
+        courts = [r["court_short"] for r in await conn.fetch(
+            "SELECT DISTINCT court_short FROM public.documents WHERE updated_at >= $1",
+            args.updated_since,
+        )]
+        for court in sorted(courts):
+            status = await conn.execute(BACKFILL_UPDATED_SQL, args.updated_since, court)
+            print(f"Backfilled {court} documents updated since {args.updated_since}: {status}")
+        return
     if not args.skip_null_dates:
         status = await conn.execute(BACKFILL_NULL_DATES_SQL)
         print(f"Backfilled documents with null decision_date: {status}")
