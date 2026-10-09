@@ -3,9 +3,11 @@ import asyncio
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
+import asyncpg
 import click
 import httpx
 from dotenv import load_dotenv
@@ -62,35 +64,66 @@ def iter_enhanced_docs(db_short: str):
                         continue
 
 
-async def upsert_to_supabase(
-    client: httpx.AsyncClient,
-    supabase_url: str,
-    supabase_key: str,
-    rows: list[dict],
-) -> bool:
-    """Upsert a batch of documents to Supabase."""
+UPSERT_COLUMNS = [
+    "doc_id", "url", "court_short", "decision_date", "process_number", "legal_domain",
+    "is_auj", "full_text", "summary", "metadata",
+    "embedding", "embedding_context", "embedding_ratio",
+]
+_CASTS = {"decision_date": "::date", "metadata": "::jsonb",
+          "embedding": "::text::halfvec", "embedding_context": "::text::halfvec",
+          "embedding_ratio": "::text::halfvec"}
+UPSERT_SQL = (
+    f"INSERT INTO documents ({', '.join(UPSERT_COLUMNS)}) VALUES ("
+    + ", ".join(f"${i + 1}{_CASTS.get(c, '')}" for i, c in enumerate(UPSERT_COLUMNS))
+    + ") ON CONFLICT (doc_id) DO UPDATE SET "
+    + ", ".join(f"{c} = EXCLUDED.{c}" for c in UPSERT_COLUMNS[1:])
+)
+
+
+async def create_db_pool() -> asyncpg.Pool:
+    """Direct Postgres pool. Bypasses PostgREST, whose authenticator role caps
+    statements at 8s — too short now that each row updates three HNSW indexes."""
+    return await asyncpg.create_pool(
+        host=os.getenv("SUPABASE_DB_HOST"),
+        port=int(os.getenv("SUPABASE_DB_PORT", "5432")),
+        user=os.getenv("SUPABASE_DB_USER"),
+        password=os.getenv("SUPABASE_DB_PASSWORD"),
+        database=os.getenv("SUPABASE_DB_NAME", "postgres"),
+        min_size=1, max_size=UPSERT_CONCURRENCY,
+        statement_cache_size=0,
+        command_timeout=600,
+        init=lambda conn: conn.execute("SET statement_timeout = '600s'"),
+    )
+
+
+def _row_values(row: dict) -> tuple:
+    out = []
+    for col in UPSERT_COLUMNS:
+        v = row.get(col)
+        if col == "decision_date" and v:
+            v = date.fromisoformat(v)
+        elif col == "metadata":
+            v = json.dumps(v or {}, ensure_ascii=False)
+        elif col.startswith("embedding") and v is not None:
+            v = json.dumps(v)
+        out.append(v)
+    return tuple(out)
+
+
+async def upsert_rows(pool: asyncpg.Pool, rows: list[dict]) -> bool:
+    """Upsert a chunk of documents in one transaction, retrying transient errors."""
     if not rows:
         return True
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates,return=minimal",
-    }
-    url = f"{supabase_url}/rest/v1/documents?on_conflict=doc_id"
+    values = [_row_values(r) for r in rows]
     for attempt in range(5):
         try:
-            resp = await client.post(url, json=rows, headers=headers, timeout=60)
-            if resp.status_code in (200, 201, 204):
-                return True
-            if resp.status_code in (429, 503, 500):
-                await asyncio.sleep(2 ** attempt)
-                continue
-            console.print(f"[red]Supabase upsert error {resp.status_code}: {resp.text[:300]}[/red]")
-            return False
-        except (httpx.TimeoutException, httpx.RequestError) as e:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.executemany(UPSERT_SQL, values)
+            return True
+        except (asyncpg.PostgresError, OSError, asyncio.TimeoutError) as e:
             if attempt == 4:
-                console.print(f"[red]Supabase upsert failed: {e}[/red]")
+                console.print(f"[red]Postgres upsert failed: {e}[/red]")
                 return False
             await asyncio.sleep(2 ** attempt)
     return False
@@ -98,8 +131,8 @@ async def upsert_to_supabase(
 
 async def process_database(
     db_config: dict, state: dict, api_key: str,
-    supabase_url: str, supabase_key: str,
     concurrency: int, progress: Progress, task_id,
+    only_ids: Optional[set[str]] = None,
 ):
     db_name = db_config["db"]
     db_short = db_config["short"]
@@ -107,24 +140,24 @@ async def process_database(
     semaphore = asyncio.Semaphore(concurrency)
 
     limits = httpx.Limits(max_connections=concurrency + 50, max_keepalive_connections=concurrency)
-    async with httpx.AsyncClient(limits=limits, timeout=httpx.Timeout(300, connect=30)) as client:
+    async with httpx.AsyncClient(limits=limits, timeout=httpx.Timeout(300, connect=30)) as client, \
+            await create_db_pool() as pool:
         batch_docs = []
-        # Large batches — each batch makes ceil(N/100)*3 API calls
-        # 500 docs → 15 API calls (5 chunks × 3 fields)
-        batch_size = 500
-
-        BATCH_TIMEOUT = 600  # 10 min max per batch of 500 docs
+        # 100 docs → 3 embedding API calls; small enough that state is saved
+        # every few minutes given the slow upserts (~0.6 docs/s on HNSW).
+        batch_size = 100
+        BATCH_TIMEOUT = 3600
 
         for doc in iter_enhanced_docs(db_short):
             doc_id = doc.get("doc_id", "")
-            if not doc_id or doc_id in uploaded_ids:
+            if not doc_id or doc_id in uploaded_ids or (only_ids is not None and doc_id not in only_ids):
                 progress.advance(task_id)
                 continue
             batch_docs.append(doc)
             if len(batch_docs) >= batch_size:
                 try:
                     await asyncio.wait_for(
-                        _process_batch(client, batch_docs, api_key, supabase_url, supabase_key, semaphore, uploaded_ids, progress, task_id),
+                        _process_batch(client, batch_docs, api_key, pool, semaphore, uploaded_ids, progress, task_id),
                         timeout=BATCH_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
@@ -138,7 +171,7 @@ async def process_database(
         if batch_docs:
             try:
                 await asyncio.wait_for(
-                    _process_batch(client, batch_docs, api_key, supabase_url, supabase_key, semaphore, uploaded_ids, progress, task_id),
+                    _process_batch(client, batch_docs, api_key, pool, semaphore, uploaded_ids, progress, task_id),
                     timeout=BATCH_TIMEOUT,
                 )
             except (asyncio.TimeoutError, Exception) as e:
@@ -150,9 +183,10 @@ async def process_database(
 
 
 EMBED_FIELDS = ["embedding", "embedding_context", "embedding_ratio"]
+UPSERT_CONCURRENCY = 4
 
 
-async def _process_batch(client, batch_docs, api_key, supabase_url, supabase_key, semaphore, uploaded_ids, progress, task_id):
+async def _process_batch(client, batch_docs, api_key, pool, semaphore, uploaded_ids, progress, task_id):
     """Generate 3 independent embeddings per doc using batch API calls, then upsert.
 
     Instead of N×3 individual API calls, we make ceil(N/100)×3 batch calls.
@@ -215,17 +249,19 @@ async def _process_batch(client, batch_docs, api_key, supabase_url, supabase_key
         good_rows.append(row)
         good_doc_ids.append(doc.get("doc_id", ""))
 
-    # Upsert in chunks (Supabase has payload size limits)
-    UPSERT_CHUNK = 50
-    all_ok = True
-    for j in range(0, len(good_rows), UPSERT_CHUNK):
-        chunk_rows = good_rows[j:j + UPSERT_CHUNK]
-        chunk_ids = good_doc_ids[j:j + UPSERT_CHUNK]
-        ok = await upsert_to_supabase(client, supabase_url, supabase_key, chunk_rows)
+    # Each row costs ~1-6s (3 HNSW indexes + FTS trigger on full_text), so keep
+    # transactions small; UPSERT_CONCURRENCY chunks run in parallel.
+    UPSERT_CHUNK = 10
+
+    async def _upsert_chunk(chunk_rows: list[dict], chunk_ids: list[str]):
+        ok = await upsert_rows(pool, chunk_rows)
         if ok:
             uploaded_ids.update(d for d in chunk_ids if d)
-        else:
-            all_ok = False
+
+    await asyncio.gather(*[
+        _upsert_chunk(good_rows[j:j + UPSERT_CHUNK], good_doc_ids[j:j + UPSERT_CHUNK])
+        for j in range(0, len(good_rows), UPSERT_CHUNK)
+    ])
 
     if failed:
         console.print(f"[yellow]{failed}/{len(batch_docs)} embeddings failed[/yellow]")
@@ -235,17 +271,24 @@ async def _process_batch(client, batch_docs, api_key, supabase_url, supabase_key
 @click.option("--db", default=None, help="Only process specific DB (short name)")
 @click.option("--reset", is_flag=True, help="Reset embedder state")
 @click.option("--concurrency", default=20, help="Concurrent embedding requests")
-def main(db: Optional[str], reset: bool, concurrency: int):
+@click.option("--ids-file", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Only upload doc_ids listed in this file (one per line)")
+def main(db: Optional[str], reset: bool, concurrency: int, ids_file: Optional[str]):
     """Generate embeddings and upload to Supabase."""
     api_key = os.getenv("OPENROUTER_API_KEY")
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
-    if not api_key or not supabase_url or not supabase_key:
-        console.print("[red]Missing env vars: OPENROUTER_API_KEY / SUPABASE_URL / SUPABASE_SERVICE_KEY[/red]")
+    missing = [v for v in ("OPENROUTER_API_KEY", "SUPABASE_DB_HOST", "SUPABASE_DB_USER", "SUPABASE_DB_PASSWORD")
+               if not os.getenv(v)]
+    if missing:
+        console.print(f"[red]Missing env vars: {', '.join(missing)}[/red]")
         sys.exit(1)
 
     if reset and STATE_FILE.exists():
         STATE_FILE.unlink()
+
+    only_ids = None
+    if ids_file:
+        only_ids = {line.strip() for line in open(ids_file) if line.strip()}
+        console.print(f"Restricting upload to {len(only_ids):,} doc_ids from {ids_file}")
 
     state = load_state()
     dbs = DATABASES
@@ -265,8 +308,7 @@ def main(db: Optional[str], reset: bool, concurrency: int):
                 total=db_config["approx_count"], completed=uploaded,
             )
             asyncio.run(process_database(
-                db_config, state, api_key, supabase_url, supabase_key,
-                concurrency, progress, task_id,
+                db_config, state, api_key, concurrency, progress, task_id, only_ids,
             ))
 
     console.print("[bold green]Embedding & upload complete![/bold green]")
