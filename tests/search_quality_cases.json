@@ -1,0 +1,1487 @@
+[
+  {
+    "id": "civil_medical_informed_consent",
+    "q_semantic": "Responsabilidade civil médica por realização de intervenção sem consentimento informado adequado do paciente",
+    "q_keywords": [
+      "responsabilidade médica",
+      "consentimento informado"
+    ],
+    "relevance": "O acórdão deve apreciar responsabilidade médica ou hospitalar fundada na falta, insuficiência ou invalidade do consentimento informado."
+  },
+  {
+    "id": "civil_loss_of_chance",
+    "q_semantic": "Indemnização por perda de chance causada pela atuação negligente de advogado que deixou caducar um prazo processual",
+    "q_keywords": [
+      "perda de chance",
+      "advogado",
+      "prazo"
+    ],
+    "relevance": "O acórdão deve discutir perda de chance processual e responsabilidade de advogado ou mandatário por omissão de ato ou prazo."
+  },
+  {
+    "id": "civil_traffic_pedestrian",
+    "q_semantic": "Atropelamento de peão em passadeira e repartição de culpa entre o condutor e a vítima",
+    "q_keywords": [
+      "atropelamento",
+      "peão",
+      "passadeira"
+    ],
+    "relevance": "O acórdão deve tratar um atropelamento de peão, preferencialmente em passadeira, e avaliar culpa, risco ou concorrência de culpas."
+  },
+  {
+    "id": "civil_nonpecuniary_damage",
+    "q_semantic": "Fixação equitativa de indemnização por danos não patrimoniais graves decorrentes de acidente de viação",
+    "q_keywords": [
+      "danos não patrimoniais",
+      "acidente de viação",
+      "indemnização"
+    ],
+    "relevance": "O acórdão deve apreciar a quantificação de danos não patrimoniais resultantes de acidente rodoviário."
+  },
+  {
+    "id": "civil_adverse_possession",
+    "q_semantic": "Aquisição da propriedade de imóvel por usucapião com posse pública pacífica e continuada",
+    "q_keywords": [
+      "usucapião",
+      "posse",
+      "imóvel"
+    ],
+    "relevance": "O acórdão deve decidir ou analisar a aquisição de propriedade imobiliária por usucapião e os requisitos da posse."
+  },
+  {
+    "id": "procedure_res_judicata",
+    "q_semantic": "Exceção de caso julgado por identidade de sujeitos pedido e causa de pedir entre duas ações",
+    "q_keywords": [
+      "caso julgado",
+      "identidade",
+      "causa de pedir"
+    ],
+    "relevance": "O acórdão deve apreciar a exceção ou autoridade do caso julgado, incluindo identidade de sujeitos, pedido ou causa de pedir."
+  },
+  {
+    "id": "procedure_burden_of_proof",
+    "q_semantic": "Inversão do ónus da prova e facilidade probatória da parte contrária em processo civil",
+    "q_keywords": [
+      "inversão",
+      "ónus da prova",
+      "facilidade probatória"
+    ],
+    "relevance": "O acórdão deve discutir inversão ou distribuição dinâmica do ónus da prova por dificuldade ou facilidade probatória."
+  },
+  {
+    "id": "procedure_late_appeal",
+    "q_semantic": "Recurso apresentado depois do prazo e pagamento de multa por prática extemporânea do ato processual",
+    "q_keywords": [
+      "recurso",
+      "extemporâneo",
+      "multa"
+    ],
+    "relevance": "O acórdão deve tratar a tempestividade de recurso ou ato processual tardio e eventual multa ou justo impedimento."
+  },
+  {
+    "id": "labor_dismissal_email",
+    "q_semantic": "Despedimento com justa causa de trabalhador por utilização indevida do correio eletrónico profissional",
+    "q_keywords": [
+      "despedimento",
+      "justa causa",
+      "correio eletrónico"
+    ],
+    "relevance": "O acórdão deve apreciar despedimento disciplinar relacionado com utilização de email, internet ou meios informáticos profissionais."
+  },
+  {
+    "id": "labor_workplace_harassment",
+    "q_semantic": "Assédio moral no trabalho através de humilhação isolamento e pressão reiterada exercida pela entidade empregadora",
+    "q_keywords": [
+      "assédio moral",
+      "trabalho",
+      "humilhação"
+    ],
+    "relevance": "O acórdão deve analisar assédio moral ou laboral baseado em condutas reiteradas de humilhação, isolamento, perseguição ou pressão."
+  },
+  {
+    "id": "labor_work_accident",
+    "q_semantic": "Acidente de trabalho sofrido no trajeto entre a residência do trabalhador e o local de trabalho",
+    "q_keywords": [
+      "acidente de trabalho",
+      "trajeto",
+      "residência"
+    ],
+    "relevance": "O acórdão deve tratar um acidente de trabalho in itinere, ocorrido no trajeto de ida ou regresso do trabalho."
+  },
+  {
+    "id": "labor_fixed_term_contract",
+    "q_semantic": "Invalidade do motivo justificativo num contrato de trabalho a termo e conversão em contrato sem termo",
+    "q_keywords": [
+      "contrato a termo",
+      "motivo justificativo",
+      "sem termo"
+    ],
+    "relevance": "O acórdão deve apreciar a validade da justificação de contrato de trabalho a termo e a sua conversão em contrato sem termo."
+  },
+  {
+    "id": "criminal_domestic_violence",
+    "q_semantic": "Crime de violência doméstica por maus-tratos psicológicos ameaças controlo e humilhação sem agressões físicas",
+    "q_keywords": [
+      "violência doméstica",
+      "maus-tratos psicológicos",
+      "ameaças"
+    ],
+    "relevance": "O acórdão deve apreciar violência doméstica fundada total ou principalmente em abuso psicológico, ameaças, controlo ou humilhação."
+  },
+  {
+    "id": "criminal_suspended_sentence",
+    "q_semantic": "Suspensão da execução da pena de prisão e formulação de prognose favorável de reinserção social do arguido",
+    "q_keywords": [
+      "suspensão da pena",
+      "prognose favorável",
+      "reinserção"
+    ],
+    "relevance": "O acórdão deve discutir os pressupostos da suspensão da execução da pena de prisão e o juízo de prognose favorável."
+  },
+  {
+    "id": "criminal_hearsay_evidence",
+    "q_semantic": "Valoração em julgamento de depoimento indireto ou testemunho de ouvir dizer no processo penal",
+    "q_keywords": [
+      "depoimento indireto",
+      "ouvir dizer",
+      "prova"
+    ],
+    "relevance": "O acórdão deve apreciar a admissibilidade ou valoração de depoimento indireto, testemunho de ouvir dizer ou prova por interposta pessoa."
+  },
+  {
+    "id": "criminal_drug_trafficking_minor",
+    "q_semantic": "Distinção entre tráfico de estupefacientes de menor gravidade e tráfico comum atendendo à quantidade e modo de atuação",
+    "q_keywords": [
+      "tráfico de menor gravidade",
+      "estupefacientes",
+      "quantidade"
+    ],
+    "relevance": "O acórdão deve qualificar factos como tráfico de menor gravidade ou tráfico comum e discutir quantidade, natureza da droga ou modo de atuação."
+  },
+  {
+    "id": "criminal_pretrial_detention",
+    "q_semantic": "Aplicação de prisão preventiva devido a perigo de fuga continuação da atividade criminosa ou perturbação do inquérito",
+    "q_keywords": [
+      "prisão preventiva",
+      "perigo de fuga",
+      "atividade criminosa"
+    ],
+    "relevance": "O acórdão deve apreciar a aplicação ou manutenção de prisão preventiva com base em perigos cautelares concretos."
+  },
+  {
+    "id": "family_child_relocation",
+    "q_semantic": "Alteração das responsabilidades parentais devido à mudança da residência da criança para outra cidade ou país",
+    "q_keywords": [
+      "responsabilidades parentais",
+      "mudança de residência",
+      "criança"
+    ],
+    "relevance": "O acórdão deve analisar mudança relevante da residência da criança e os seus efeitos na guarda, residência ou convívios parentais."
+  },
+  {
+    "id": "family_child_support",
+    "q_semantic": "Fixação ou alteração de alimentos devidos a filho menor considerando necessidades da criança e capacidade económica dos pais",
+    "q_keywords": [
+      "alimentos",
+      "filho menor",
+      "capacidade económica"
+    ],
+    "relevance": "O acórdão deve apreciar alimentos a filho menor, ponderando necessidades do menor e meios económicos dos progenitores."
+  },
+  {
+    "id": "insolvency_fresh_start",
+    "q_semantic": "Exoneração do passivo restante recusada por apresentação tardia à insolvência ou atuação culposa do devedor",
+    "q_keywords": [
+      "exoneração do passivo restante",
+      "apresentação tardia",
+      "devedor"
+    ],
+    "relevance": "O acórdão deve decidir a concessão, recusa ou cessação antecipada da exoneração do passivo restante por comportamento do devedor."
+  },
+  {
+    "id": "administrative_public_procurement",
+    "q_semantic": "Exclusão de proposta em concurso público por incumprimento de requisito técnico ou falta de documento obrigatório",
+    "q_keywords": [
+      "concurso público",
+      "exclusão da proposta",
+      "documento"
+    ],
+    "relevance": "O acórdão deve apreciar a exclusão de proposta num procedimento de contratação pública por requisito técnico, atributo ou documento em falta."
+  },
+  {
+    "id": "administrative_disciplinary",
+    "q_semantic": "Processo disciplinar de trabalhador em funções públicas e violação do direito de audiência e defesa",
+    "q_keywords": [
+      "processo disciplinar",
+      "funções públicas",
+      "direito de defesa"
+    ],
+    "relevance": "O acórdão deve tratar processo disciplinar na Administração Pública e garantias de audiência, contraditório ou defesa do trabalhador."
+  },
+  {
+    "id": "tax_vat_deduction",
+    "q_semantic": "Recusa do direito à dedução de IVA por faturas falsas ou operações simuladas e ónus da prova da administração tributária",
+    "q_keywords": [
+      "dedução de IVA",
+      "faturas falsas",
+      "ónus da prova"
+    ],
+    "relevance": "O acórdão deve apreciar dedução de IVA associada a faturas falsas, operações simuladas ou inexistentes e respetivo ónus da prova."
+  },
+  {
+    "id": "tax_limitation",
+    "q_semantic": "Prescrição de dívida tributária e efeito interruptivo ou suspensivo da citação no processo de execução fiscal",
+    "q_keywords": [
+      "prescrição",
+      "dívida tributária",
+      "execução fiscal"
+    ],
+    "relevance": "O acórdão deve discutir prescrição tributária em execução fiscal e causas de interrupção ou suspensão, incluindo a citação."
+  },
+  {
+    "id": "event_property_hidden_leaks",
+    "q_semantic": "Compra de imóvel com infiltrações ocultas em que o comprador pediu a resolução, mas não denunciou os defeitos dentro do prazo",
+    "q_keywords": [
+      "infiltrações",
+      "defeitos ocultos",
+      "caducidade"
+    ],
+    "relevance": "O acórdão deve apreciar resolução da compra de imóvel com infiltrações ou defeitos ocultos e a caducidade ligada à denúncia tardia."
+  },
+  {
+    "id": "event_animal_motorway",
+    "q_semantic": "Condutor embateu num animal surgido na autoestrada e a concessionária não demonstrou ter cumprido os deveres de vigilância",
+    "q_keywords": [
+      "animal autoestrada",
+      "concessionária",
+      "vigilância"
+    ],
+    "relevance": "O acórdão deve apreciar a responsabilidade da concessionária por acidente causado por animal na autoestrada e os deveres de vigilância ou segurança."
+  },
+  {
+    "id": "event_social_media_injury",
+    "q_semantic": "Fotografias ou vídeos publicados numa rede social usados para provar atividades incompatíveis com a incapacidade alegada pelo lesado",
+    "q_keywords": [
+      "rede social",
+      "incapacidade",
+      "indemnização"
+    ],
+    "relevance": "O acórdão deve valorar conteúdos de rede social ao apreciar incapacidade física ou indemnização por dano corporal."
+  },
+  {
+    "id": "event_blank_promissory_note",
+    "q_semantic": "Avalista assinou livrança em branco e invocou preenchimento abusivo sem provar violação do pacto de preenchimento",
+    "q_keywords": [
+      "livrança em branco",
+      "preenchimento abusivo",
+      "avalista"
+    ],
+    "relevance": "O acórdão deve apreciar preenchimento abusivo de livrança em branco e o ónus de provar a violação do pacto de preenchimento."
+  },
+  {
+    "id": "event_online_fraud_delivery",
+    "q_semantic": "Vítima entregou voluntariamente dinheiro após engano num anúncio ou plataforma online e os factos foram qualificados como burla",
+    "q_keywords": [
+      "anúncio online",
+      "entrega dinheiro",
+      "burla"
+    ],
+    "relevance": "O acórdão deve qualificar como burla uma entrega voluntária de dinheiro causada por engano online anterior."
+  },
+  {
+    "id": "event_night_home_search",
+    "q_semantic": "Busca domiciliária realizada de noite com consentimento do morador cuja liberdade ou documentação foi contestada",
+    "q_keywords": [
+      "busca domiciliária",
+      "consentimento",
+      "noite"
+    ],
+    "relevance": "O acórdão deve apreciar a validade de busca domiciliária noturna por possível vício no consentimento do morador."
+  },
+  {
+    "id": "event_psychological_domestic_violence",
+    "q_semantic": "Condenação por violência doméstica baseada em humilhações controlo de comunicações e isolamento sem agressões físicas provadas",
+    "q_keywords": [
+      "violência doméstica",
+      "maus-tratos psicológicos",
+      "sem agressões físicas"
+    ],
+    "relevance": "O acórdão deve apreciar violência doméstica baseada essencialmente em maus-tratos psicológicos e distingui-la de discussões conjugais comuns."
+  },
+  {
+    "id": "event_low_value_dismissal",
+    "q_semantic": "Trabalhador despedido por retirar bens de baixo valor do empregador e discussão da proporcionalidade da sanção disciplinar",
+    "q_keywords": [
+      "despedimento",
+      "bens baixo valor",
+      "proporcionalidade"
+    ],
+    "relevance": "O acórdão deve apreciar se o despedimento por apropriação de bens de reduzido valor é ilícito ou desproporcionado."
+  },
+  {
+    "id": "event_pregnancy_nonrenewal",
+    "q_semantic": "Contrato de trabalhadora grávida não renovado ou cessado sem o empregador demonstrar razão objetiva alheia à maternidade",
+    "q_keywords": [
+      "trabalhadora grávida",
+      "não renovação",
+      "discriminação"
+    ],
+    "relevance": "O acórdão deve relacionar cessação ou não renovação contratual com gravidez ou parentalidade e apreciar eventual discriminação."
+  },
+  {
+    "id": "event_platform_worker_autonomy",
+    "q_semantic": "Estafeta ou motorista de plataforma digital pediu reconhecimento de contrato de trabalho apesar de escolher horários e poder recusar serviços",
+    "q_keywords": [
+      "plataforma digital",
+      "contrato de trabalho",
+      "autonomia"
+    ],
+    "relevance": "O acórdão deve apreciar a existência de contrato de trabalho de prestador de plataforma à luz da sua autonomia efetiva."
+  },
+  {
+    "id": "event_alternating_residence_refused",
+    "q_semantic": "Residência alternada da criança recusada por conflito parental intenso ou distância entre residências e escola",
+    "q_keywords": [
+      "residência alternada",
+      "conflito parental",
+      "criança"
+    ],
+    "relevance": "O acórdão deve apreciar a recusa de residência alternada por consequências concretas do conflito ou da distância."
+  },
+  {
+    "id": "event_adult_child_support",
+    "q_semantic": "Progenitor pediu cessação de alimentos de filho maior estudante mas o atraso académico foi considerado justificável",
+    "q_keywords": [
+      "filho maior",
+      "cessação de alimentos",
+      "estudos"
+    ],
+    "relevance": "O acórdão deve apreciar a manutenção de alimentos a filho maior estudante apesar de atraso ou insucesso académico parcial."
+  },
+  {
+    "id": "event_manager_diverts_clients",
+    "q_semantic": "Gerente transferiu clientela trabalhadores ou ativos para outra sociedade por si controlada violando deveres de lealdade",
+    "q_keywords": [
+      "gerente",
+      "desvio de clientela",
+      "dever de lealdade"
+    ],
+    "relevance": "O acórdão deve apreciar responsabilidade de gerente por deslocar negócio ou ativos para sociedade relacionada."
+  },
+  {
+    "id": "event_shareholder_conflict_vote",
+    "q_semantic": "Deliberação societária aprovada com voto de sócio em possível conflito de interesses sem vantagem especial demonstrada",
+    "q_keywords": [
+      "conflito de interesses",
+      "deliberação social",
+      "vantagem especial"
+    ],
+    "relevance": "O acórdão deve apreciar anulação de deliberação por voto de sócio em conflito de interesses e a existência de vantagem especial ou dano."
+  },
+  {
+    "id": "event_insolvency_family_transfers",
+    "q_semantic": "Transferências ou alienações a familiares antes da insolvência sem prova de que criaram ou agravaram a situação insolvencial",
+    "q_keywords": [
+      "qualificação da insolvência",
+      "transferências familiares",
+      "nexo causal"
+    ],
+    "relevance": "O acórdão deve apreciar qualificação culposa perante atos patrimoniais a familiares e a prova de criação ou agravamento da insolvência."
+  },
+  {
+    "id": "event_insolvency_sale_resolution",
+    "q_semantic": "Resolução em benefício da massa de venda anterior à insolvência por preço inferior ao mercado e falta de prova da má-fé do adquirente",
+    "q_keywords": [
+      "resolução em benefício da massa",
+      "má-fé",
+      "venda"
+    ],
+    "relevance": "O acórdão deve apreciar resolução de venda pré-insolvencial, má-fé do adquirente ou prejuízo para a massa."
+  },
+  {
+    "id": "event_unlicensed_demolition",
+    "q_semantic": "Município ordenou demolição de construção sem licença sem ponderar previamente a possibilidade de legalização",
+    "q_keywords": [
+      "ordem de demolição",
+      "possibilidade de legalização",
+      "município"
+    ],
+    "relevance": "O acórdão deve apreciar a validade de ordem municipal de demolição por falta de análise prévia da possibilidade de legalização."
+  },
+  {
+    "id": "event_procurement_independent_exclusion",
+    "q_semantic": "Concorrente excluído pediu suspensão da adjudicação mas a proposta continuaria excluída por um fundamento autónomo",
+    "q_keywords": [
+      "concurso público",
+      "fundamento autónomo",
+      "exclusão da proposta"
+    ],
+    "relevance": "O acórdão deve apreciar tutela cautelar de concorrente cuja proposta permaneceria excluída por fundamento independente."
+  },
+  {
+    "id": "event_fake_invoices_supplier",
+    "q_semantic": "Liquidação tributária baseada em faturas falsas anulada porque os indícios respeitavam apenas a irregularidades do fornecedor",
+    "q_keywords": [
+      "faturas falsas",
+      "irregularidades fornecedor",
+      "liquidação"
+    ],
+    "relevance": "O acórdão deve apreciar se indícios centrados no fornecedor bastam para imputar ao adquirente conhecimento de operações simuladas."
+  },
+  {
+    "id": "event_unexplained_family_loan",
+    "q_semantic": "Depósitos bancários tratados como acréscimo patrimonial não justificado cuja origem foi atribuída a empréstimo familiar",
+    "q_keywords": [
+      "acréscimo patrimonial",
+      "empréstimo familiar",
+      "depósitos bancários"
+    ],
+    "relevance": "O acórdão deve apreciar empréstimo familiar como justificação da origem de depósitos ou acréscimo patrimonial."
+  },
+  {
+    "id": "event_unemployment_by_agreement",
+    "q_semantic": "Cessação do contrato por acordo durante reestruturação ou extinção de postos reconhecida como desemprego involuntário",
+    "q_keywords": [
+      "subsídio de desemprego",
+      "cessação por acordo",
+      "reestruturação"
+    ],
+    "relevance": "O acórdão deve apreciar desemprego involuntário numa cessação por acordo ligada a reestruturação ou redução de postos."
+  },
+  {
+    "id": "event_social_benefit_repayment",
+    "q_semantic": "Segurança Social exigiu devolução de prestações indevidas mas o beneficiário invocou prescrição boa-fé ou erro administrativo",
+    "q_keywords": [
+      "restituição de prestações",
+      "Segurança Social",
+      "prescrição"
+    ],
+    "relevance": "O acórdão deve apreciar limitação ou exclusão da devolução de prestações sociais por prescrição, boa-fé ou erro administrativo."
+  },
+  {
+    "id": "event_customer_list_trade_secret",
+    "q_semantic": "Antigo trabalhador levou listas de clientes para concorrente e discutiu-se a falta de medidas de confidencialidade para serem segredo comercial",
+    "q_keywords": [
+      "segredo comercial",
+      "lista de clientes",
+      "confidencialidade"
+    ],
+    "relevance": "O acórdão deve apreciar se listas de clientes constituem segredo comercial e se existiam medidas razoáveis de confidencialidade."
+  },
+  {
+    "id": "event_video_surveillance_evidence",
+    "q_semantic": "Imagens de videovigilância admitidas como prova de furto apesar de discussão sobre proteção de dados e controlo laboral",
+    "q_keywords": [
+      "videovigilância",
+      "prova",
+      "furto"
+    ],
+    "relevance": "O acórdão deve apreciar a admissibilidade de imagens de videovigilância como prova de ilícito ou infração laboral."
+  },
+  {
+    "id": "event_vehicle_theft_key_inside",
+    "q_semantic": "Seguradora recusou cobrir furto de veículo porque a chave ficou no interior e discutiu-se a aplicação ou comunicação da exclusão contratual",
+    "q_keywords": [
+      "furto de veículo",
+      "chave",
+      "exclusão contratual"
+    ],
+    "relevance": "O acórdão deve apreciar cobertura de seguro por furto de veículo perante chave deixada no interior ou cláusula de exclusão."
+  },
+  {
+    "id": "legislation_ct_employment_presumption",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CT",
+        "article": "11"
+      },
+      {
+        "law": "CT",
+        "article": "12"
+      }
+    ],
+    "match": "all",
+    "relevance": "O acórdão deve citar os artigos 11.º e 12.º do Código do Trabalho ao apreciar contrato de trabalho ou presunção de laboralidade."
+  },
+  {
+    "id": "legislation_ct_unlawful_dismissal",
+    "mode": "legislation",
+    "articles": [
+      "CT art. 381",
+      "CT art. 389",
+      "CT art. 390"
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar pelo menos um dos artigos 381.º, 389.º ou 390.º do Código do Trabalho e tratar despedimento ilícito ou seus efeitos."
+  },
+  {
+    "id": "legislation_cc_tort",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CC",
+        "article": "483"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar o artigo 483.º do Código Civil e apreciar os pressupostos da responsabilidade civil extracontratual."
+  },
+  {
+    "id": "legislation_cc_nonpecuniary_compensation",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CC",
+        "article": "496"
+      },
+      {
+        "law": "CC",
+        "article": "562"
+      },
+      {
+        "law": "CC",
+        "article": "566"
+      }
+    ],
+    "match": "all",
+    "relevance": "O acórdão deve citar conjuntamente os artigos 496.º, 562.º e 566.º do Código Civil ao quantificar uma indemnização."
+  },
+  {
+    "id": "legislation_cc_limitation",
+    "mode": "legislation",
+    "articles": [
+      "CC art. 309",
+      "CC art. 323",
+      "CC art. 498"
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar pelo menos um dos artigos indicados do Código Civil ao apreciar prazo ou interrupção da prescrição."
+  },
+  {
+    "id": "legislation_cpc_judgment_nullity",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CPC",
+        "article": "615.º, n.º 1"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar o artigo 615.º, n.º 1, do CPC e apreciar nulidade da sentença por vício de pronúncia, fundamentos ou decisão."
+  },
+  {
+    "id": "legislation_cpc_res_judicata",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CPC",
+        "article": "580"
+      },
+      {
+        "law": "CPC",
+        "article": "581"
+      },
+      {
+        "law": "CPC",
+        "article": "619"
+      }
+    ],
+    "match": "all",
+    "relevance": "O acórdão deve citar os artigos 580.º, 581.º e 619.º do CPC ao apreciar requisitos e efeitos do caso julgado."
+  },
+  {
+    "id": "legislation_cp_sentencing",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CP",
+        "article": "71.º, n.º 2"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar o artigo 71.º, n.º 2, do Código Penal ao determinar a medida concreta da pena."
+  },
+  {
+    "id": "legislation_cp_domestic_violence",
+    "mode": "legislation",
+    "articles": [
+      "artigo 152.º do Código Penal"
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar o artigo 152.º do Código Penal e apreciar o crime de violência doméstica."
+  },
+  {
+    "id": "legislation_cpp_nullities",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CPP",
+        "article": "118"
+      },
+      {
+        "law": "CPP",
+        "article": "119"
+      },
+      {
+        "law": "CPP",
+        "article": "120"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar um dos artigos 118.º a 120.º do CPP ao classificar ou decidir uma nulidade processual penal."
+  },
+  {
+    "id": "legislation_cpp_pretrial_detention",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CPP",
+        "article": "193"
+      },
+      {
+        "law": "CPP",
+        "article": "202"
+      },
+      {
+        "law": "CPP",
+        "article": "204"
+      }
+    ],
+    "match": "all",
+    "relevance": "O acórdão deve citar os artigos 193.º, 202.º e 204.º do CPP ao apreciar aplicação ou manutenção de prisão preventiva."
+  },
+  {
+    "id": "legislation_cire_insolvency",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "Código da Insolvência e da Recuperação de Empresas",
+        "article": "3"
+      },
+      {
+        "law": "Código da Insolvência e da Recuperação de Empresas",
+        "article": "20"
+      }
+    ],
+    "match": "all",
+    "relevance": "O acórdão deve citar os artigos 3.º e 20.º do CIRE ao apreciar situação de insolvência ou factos legitimadores do pedido."
+  },
+  {
+    "id": "legislation_crp_guarantees",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CRP",
+        "article": "18"
+      },
+      {
+        "law": "CRP",
+        "article": "20"
+      },
+      {
+        "law": "CRP",
+        "article": "32"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar pelo menos um dos artigos 18.º, 20.º ou 32.º da CRP ao apreciar direitos fundamentais ou garantias processuais."
+  },
+  {
+    "id": "legislation_cpta_injunction",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CPTA",
+        "article": "120"
+      },
+      {
+        "law": "CPTA",
+        "article": "121"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar o artigo 120.º ou 121.º do CPTA ao apreciar providência cautelar administrativa."
+  },
+  {
+    "id": "legislation_lgt_burden",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "LGT",
+        "article": "74"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar o artigo 74.º da Lei Geral Tributária ao apreciar a distribuição do ónus da prova."
+  },
+  {
+    "id": "legislation_road_speed",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CE",
+        "article": "24"
+      },
+      {
+        "law": "CE",
+        "article": "25"
+      },
+      {
+        "law": "CE",
+        "article": "27"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar um dos artigos 24.º, 25.º ou 27.º do Código da Estrada ao apreciar velocidade ou responsabilidade rodoviária."
+  },
+  {
+    "id": "legislation_semantic_employment_platform",
+    "mode": "legislation_semantic",
+    "q": "qual é a norma do Código do Trabalho sobre presunção de contrato de trabalho aplicável a estafetas de plataformas digitais",
+    "relevance": "O acórdão deve apreciar presunção de contrato de trabalho ou laboralidade, preferencialmente em plataforma digital."
+  },
+  {
+    "id": "legislation_semantic_pretrial_dangers",
+    "mode": "legislation_semantic",
+    "q": "normas processuais penais sobre prisão preventiva e perigos de fuga perturbação do inquérito ou continuação criminosa",
+    "relevance": "O acórdão deve apreciar prisão preventiva e perigos cautelares concretos previstos no CPP."
+  },
+  {
+    "id": "legislation_semantic_tax_burden",
+    "mode": "legislation_semantic",
+    "q": "regra da lei tributária que distribui o ónus da prova entre administração fiscal e contribuinte",
+    "relevance": "O acórdão deve apreciar o ónus da prova tributário, idealmente com aplicação do artigo 74.º da LGT."
+  },
+  {
+    "id": "legislation_semantic_admin_injunction",
+    "mode": "legislation_semantic",
+    "q": "norma para decretar providência cautelar nos tribunais administrativos incluindo periculum in mora e ponderação de interesses",
+    "relevance": "O acórdão deve apreciar os pressupostos de providência cautelar administrativa ao abrigo do CPTA."
+  },
+  {
+    "id": "agent_accentless_domestic_violence",
+    "q_semantic": "violencia domestica apenas psicologica com ameacas controlo e humilhacao da vitima",
+    "q_keywords": [
+      "violencia domestica",
+      "maus tratos psicologicos"
+    ],
+    "relevance": "O acórdão deve apreciar violência doméstica baseada principalmente em ameaças, controlo, humilhação ou outros maus-tratos psicológicos."
+  },
+  {
+    "id": "agent_historical_spelling_civil_action",
+    "q_semantic": "acção de responsabilidade civil extracontratual por facto ilícito e culposo causador de prejuízo",
+    "q_keywords": [
+      "acção",
+      "responsabilidade civil extracontratual",
+      "facto ilícito"
+    ],
+    "relevance": "O acórdão deve apreciar os pressupostos de ação de responsabilidade civil extracontratual."
+  },
+  {
+    "id": "agent_exclude_jurisdiction_relocation",
+    "q_semantic": "Alteração da guarda e dos convívios por mudança da criança para o estrangeiro, decidindo o mérito e não apenas competência internacional",
+    "q_keywords": [
+      "responsabilidades parentais",
+      "mudança residência",
+      "-competência"
+    ],
+    "relevance": "O acórdão deve decidir substantivamente guarda, residência ou convívios após mudança da criança, e não apenas competência internacional."
+  },
+  {
+    "id": "agent_filter_sta_public_discipline",
+    "q_semantic": "Violação do direito de audiência e defesa em processo disciplinar de trabalhador da Administração Pública",
+    "q_keywords": [
+      "processo disciplinar",
+      "função pública",
+      "direito de defesa"
+    ],
+    "courts": [
+      "STA"
+    ],
+    "relevance": "O acórdão deve ser do STA e apreciar audiência, contraditório ou defesa em processo disciplinar da Administração Pública."
+  },
+  {
+    "id": "agent_filter_stj_loss_of_chance",
+    "q_semantic": "Responsabilidade de advogado por perda de chance processual devido a recurso ou ação apresentada fora do prazo",
+    "q_keywords": [
+      "perda de chance",
+      "advogado",
+      "prazo"
+    ],
+    "courts": [
+      "STJ"
+    ],
+    "relevance": "O acórdão deve ser do STJ e apreciar perda de chance causada por omissão ou atraso de advogado."
+  },
+  {
+    "id": "agent_recent_platform_work",
+    "q_semantic": "Reconhecimento de contrato de trabalho de estafeta de plataforma digital através da presunção de laboralidade",
+    "q_keywords": [
+      "plataforma digital",
+      "estafeta",
+      "presunção laboralidade"
+    ],
+    "from_date": "2024-01-01",
+    "relevance": "O acórdão deve ser de 2024 ou posterior e apreciar contrato de trabalho ou presunção de laboralidade em plataforma digital."
+  },
+  {
+    "id": "agent_exact_process_number",
+    "q_semantic": "Acórdão do processo 30383/23.8T8LSB.L1.S1",
+    "q_keywords": [
+      "30383/23.8T8LSB.L1.S1"
+    ],
+    "expected_process_number": "30383/23.8T8LSB.L1.S1",
+    "relevance": "O resultado diretamente relevante deve ter o número de processo 30383/23.8T8LSB.L1.S1."
+  },
+  {
+    "id": "agent_auj_only",
+    "q_semantic": "Acórdão que julgou procedente o recurso e fixou ou uniformizou efetivamente jurisprudência sobre uma interpretação jurídica divergente",
+    "q_keywords": [
+      "uniformizou jurisprudência",
+      "julgou procedente"
+    ],
+    "is_auj": true,
+    "relevance": "O resultado deve ser ele próprio um acórdão de uniformização ou fixação de jurisprudência."
+  },
+  {
+    "id": "new2_legislation_burden_of_proof_all",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CC",
+        "article": "342"
+      },
+      {
+        "law": "CPC",
+        "article": "414"
+      }
+    ],
+    "match": "all",
+    "relevance": "O acórdão deve citar conjuntamente o artigo 342.º do Código Civil e o artigo 414.º do CPC ao decidir o ónus da prova ou as consequências da dúvida sobre factos."
+  },
+  {
+    "id": "new2_legislation_civil_appeal_any",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CPC",
+        "article": "629"
+      },
+      {
+        "law": "CPC",
+        "article": "671"
+      },
+      {
+        "law": "CPC",
+        "article": "672"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar pelo menos um dos artigos indicados do CPC ao apreciar admissibilidade de recurso, revista ou revista excecional."
+  },
+  {
+    "id": "new2_legislation_insolvency_classification_all",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "Código da Insolvência e da Recuperação de Empresas",
+        "article": "186"
+      },
+      {
+        "law": "Código da Insolvência e da Recuperação de Empresas",
+        "article": "189"
+      }
+    ],
+    "match": "all",
+    "relevance": "O acórdão deve citar conjuntamente os artigos 186.º e 189.º do CIRE ao qualificar insolvência culposa e determinar os seus efeitos."
+  },
+  {
+    "id": "new2_legislation_worker_termination_any",
+    "mode": "legislation",
+    "articles": [
+      {
+        "law": "CT",
+        "article": "394"
+      },
+      {
+        "law": "CT",
+        "article": "395"
+      }
+    ],
+    "match": "any",
+    "relevance": "O acórdão deve citar o artigo 394.º ou 395.º do Código do Trabalho ao apreciar resolução do contrato pelo trabalhador."
+  },
+  {
+    "id": "new2_semantic_criminal_self_defence",
+    "mode": "legislation_semantic",
+    "q": "norma do Código Penal que exclui a ilicitude quando alguém repele uma agressão atual e ilícita usando um meio necessário",
+    "relevance": "O acórdão deve apreciar legítima defesa, incluindo atualidade da agressão, necessidade do meio ou eventual excesso."
+  },
+  {
+    "id": "new2_semantic_administrative_prior_hearing",
+    "mode": "legislation_semantic",
+    "q": "regra do procedimento administrativo que obriga a Administração a ouvir o interessado antes de decisão desfavorável e situações de dispensa",
+    "relevance": "O acórdão deve apreciar audiência prévia no procedimento administrativo ou a sua dispensa."
+  },
+  {
+    "id": "new2_semantic_consumer_goods_nonconformity",
+    "mode": "legislation_semantic",
+    "q": "normas de defesa do consumidor sobre falta de conformidade de um bem, reparação substituição redução do preço ou resolução",
+    "relevance": "O acórdão deve aplicar legislação de consumo relativa à falta de conformidade de bens e respetivos meios de reação."
+  },
+  {
+    "id": "new2_semantic_testament_capacity",
+    "mode": "legislation_semantic",
+    "q": "disposição do Código Civil sobre incapacidade para fazer testamento por falta de entendimento ou ausência de vontade livre",
+    "relevance": "O acórdão deve apreciar incapacidade testamentária, falta de entendimento ou ausência de vontade livre."
+  },
+  {
+    "id": "new2_court_date_public_service_jurisdiction",
+    "q_semantic": "Tribunal competente para litígio de consumo sobre cobrança de saneamento resíduos ou outro serviço público essencial",
+    "q_keywords": [
+      "serviço público essencial",
+      "saneamento",
+      "jurisdição"
+    ],
+    "courts": [
+      "TCON"
+    ],
+    "from_date": "2025-04-01",
+    "to_date": "2025-06-30",
+    "relevance": "O acórdão deve ser do Tribunal dos Conflitos, estar no intervalo indicado e decidir jurisdição sobre serviço público essencial."
+  },
+  {
+    "id": "new2_court_filter_data_protection",
+    "q_semantic": "Responsabilidade da Administração ou sanção relacionada com tratamento ilícito de dados pessoais e poderes da CNPD",
+    "q_keywords": [
+      "dados pessoais",
+      "CNPD",
+      "tratamento ilícito",
+      "coima"
+    ],
+    "courts": [
+      "STA",
+      "TCAS",
+      "TCAN"
+    ],
+    "relevance": "O acórdão deve provir de tribunal administrativo e apreciar proteção de dados, atuação da CNPD ou sanção associada."
+  },
+  {
+    "id": "new2_date_filter_algorithmic_management",
+    "q_semantic": "Decisão recente sobre trabalhador de plataforma sujeito a avaliação algorítmica distribuição automática de serviços ou desativação da conta",
+    "q_keywords": [
+      "plataforma digital",
+      "algoritmo",
+      "desativação",
+      "trabalhador"
+    ],
+    "from_date": "2024-01-01",
+    "to_date": "2026-12-31",
+    "relevance": "O acórdão deve estar no intervalo e apreciar trabalho em plataforma, gestão algorítmica ou desativação da conta."
+  },
+  {
+    "id": "new2_auj_bank_instalment_limitation_outcome",
+    "q_semantic": "Acórdão uniformizador que decidiu o prazo de prescrição das prestações de mútuo bancário após vencimento antecipado da dívida",
+    "q_keywords": [
+      "uniformiza jurisprudência",
+      "quotas de amortização",
+      "mútuo",
+      "prescrição"
+    ],
+    "is_auj": true,
+    "relevance": "O resultado deve ser AUJ e fixar jurisprudência sobre prescrição de prestações de empréstimo e vencimento antecipado."
+  },
+  {
+    "id": "new2_accentless_vehicle_loss_of_use",
+    "q_semantic": "indemnizacao pela privacao do uso de veiculo automovel imobilizado mesmo sem prova de despesas de transporte",
+    "q_keywords": [
+      "privacao do uso",
+      "veiculo",
+      "indemnizacao"
+    ],
+    "relevance": "O acórdão deve apreciar indemnização pela privação do uso de veículo e a necessidade de prova de despesas concretas."
+  },
+  {
+    "id": "new2_historical_orthography_eviction",
+    "q_semantic": "acção de despejo por falta de pagamento de rendas e resolução do contracto de arrendamento",
+    "q_keywords": [
+      "acção de despejo",
+      "rendas",
+      "contracto",
+      "arrendamento"
+    ],
+    "relevance": "O acórdão deve apreciar despejo ou resolução de arrendamento por falta de pagamento de rendas."
+  },
+  {
+    "id": "new2_quoted_phrase_venire",
+    "q_semantic": "Abuso do direito quando uma parte adota comportamento contraditório com a confiança criada na contraparte",
+    "q_keywords": [
+      "\"abuso do direito\"",
+      "\"venire contra factum proprium\"",
+      "confiança"
+    ],
+    "relevance": "O acórdão deve discutir especificamente venire contra factum proprium e tutela da confiança."
+  },
+  {
+    "id": "new2_exclusion_property_merits",
+    "q_semantic": "Decisão de mérito sobre aquisição de parcela de terreno por usucapião com base em atos de posse e não apenas competência",
+    "q_keywords": [
+      "usucapião",
+      "posse",
+      "parcela de terreno",
+      "-competência",
+      "-jurisdição"
+    ],
+    "relevance": "O acórdão deve decidir substantivamente usucapião ou posse sobre terreno, não apenas competência ou jurisdição."
+  },
+  {
+    "id": "new2_abbreviations_persi_pari",
+    "q_semantic": "Banco intentou execução sem integrar ou concluir regularmente o procedimento extrajudicial exigido antes da ação",
+    "q_keywords": [
+      "PERSI",
+      "PARI",
+      "incumprimento bancário",
+      "execução"
+    ],
+    "relevance": "O acórdão deve apreciar PERSI ou PARI e o impedimento de instaurar execução durante o procedimento."
+  },
+  {
+    "id": "new2_short_ambiguous_aval",
+    "q_semantic": "aval",
+    "q_keywords": [
+      "aval"
+    ],
+    "relevance": "O acórdão deve tratar aval como garantia cambiária, responsabilidade do avalista, livrança ou letra."
+  },
+  {
+    "id": "new2_verbose_condominium_leak",
+    "q_semantic": "Proprietário sofreu infiltrações vindas do telhado fachada ou terraço, pediu obras e indemnização ao condomínio e discutiu-se se a origem era parte comum ou de uso exclusivo",
+    "q_keywords": [
+      "infiltrações",
+      "parte comum",
+      "condomínio",
+      "terraço de cobertura"
+    ],
+    "relevance": "O acórdão deve apreciar infiltrações em fração, natureza comum ou exclusiva da origem e responsabilidade por obras ou danos."
+  },
+  {
+    "id": "new2_civil_tree_municipality_warning",
+    "q_semantic": "Árvore municipal caiu sobre veículo depois de moradores terem alertado por escrito para a inclinação e discutiu-se omissão de fiscalização ou força maior",
+    "q_keywords": [
+      "queda de árvore",
+      "município",
+      "omissão de fiscalização"
+    ],
+    "relevance": "O acórdão deve apreciar responsabilidade municipal por queda de árvore perante alertas anteriores e eventual fenómeno meteorológico excecional."
+  },
+  {
+    "id": "new2_commercial_fraudulent_iban",
+    "q_semantic": "Cliente pagou fatura para IBAN fraudulento comunicado após intrusão no email do fornecedor e discutiu-se se a dívida ficou extinta",
+    "q_keywords": [
+      "IBAN fraudulento",
+      "correio eletrónico",
+      "pagamento de fatura"
+    ],
+    "relevance": "O acórdão deve apreciar pagamento para IBAN alterado fraudulentamente e decidir se o devedor tem de pagar novamente."
+  },
+  {
+    "id": "new2_commercial_agency_after_termination",
+    "q_semantic": "Agente comercial continuou a angariar encomendas depois do termo formal do contrato e pediu indemnização de clientela",
+    "q_keywords": [
+      "agência comercial",
+      "renovação tácita",
+      "indemnização de clientela"
+    ],
+    "relevance": "O acórdão deve valorar atividade após o termo do contrato de agência e apreciar renovação tácita ou indemnização de clientela."
+  },
+  {
+    "id": "new2_commercial_retention_industrial_machine",
+    "q_semantic": "Máquina vendida com reserva de propriedade foi incorporada numa linha industrial antes do incumprimento e o vendedor pediu restituição",
+    "q_keywords": [
+      "reserva de propriedade",
+      "maquinaria industrial",
+      "restituição"
+    ],
+    "relevance": "O acórdão deve apreciar reivindicação de máquina incorporada perante reserva de propriedade e eventual perda de individualidade."
+  },
+  {
+    "id": "new2_insurance_life_diving_risk",
+    "q_semantic": "Seguro de vida acionado após morte em mergulho quando o segurado omitiu no questionário a prática habitual dessa atividade",
+    "q_keywords": [
+      "seguro de vida",
+      "mergulho",
+      "questionário de risco"
+    ],
+    "relevance": "O acórdão deve apreciar omissão da prática de mergulho na declaração inicial do risco e o direito da seguradora a recusar ou reduzir a prestação."
+  },
+  {
+    "id": "new2_consumer_solar_panels_output",
+    "q_semantic": "Painéis solares vendidos com promessa concreta de produção elétrica que nunca foi atingida e resolução de crédito associado",
+    "q_keywords": [
+      "painéis solares",
+      "produção prometida",
+      "crédito coligado"
+    ],
+    "relevance": "O acórdão deve confrontar produção energética prometida e obtida e apreciar resolução da compra ou do crédito associado."
+  },
+  {
+    "id": "new2_consumer_gym_disability",
+    "q_semantic": "Ginásio recusou suspensão ou cessação de contrato de longa duração após doença incapacitante e cobrou mensalidades vincendas",
+    "q_keywords": [
+      "contrato de ginásio",
+      "doença incapacitante",
+      "mensalidades"
+    ],
+    "relevance": "O acórdão deve apreciar cessação ou suspensão de contrato de ginásio por incapacidade médica superveniente."
+  },
+  {
+    "id": "new2_family_simulated_marriage",
+    "q_semantic": "Casamento celebrado para obtenção de nacionalidade ou residência sem coabitação e possível falta originária de vontade matrimonial",
+    "q_keywords": [
+      "casamento simulado",
+      "nacionalidade",
+      "vontade matrimonial"
+    ],
+    "relevance": "O acórdão deve apreciar simulação matrimonial através da vontade existente no momento da celebração e não apenas separação posterior."
+  },
+  {
+    "id": "new2_family_child_return_health_risk",
+    "q_semantic": "Pedido de regresso de criança para outro Estado recusado ou admitido perante risco grave de saúde, convulsões e acesso a medicação",
+    "q_keywords": [
+      "regresso de criança",
+      "risco grave",
+      "medicação"
+    ],
+    "relevance": "O acórdão deve apreciar risco grave de saúde como fundamento para recusar ou permitir o regresso internacional de criança."
+  },
+  {
+    "id": "new2_insolvency_connected_setoff",
+    "q_semantic": "Compensação após insolvência entre preço de mercadorias e crédito indemnizatório do comprador por defeitos das mesmas mercadorias",
+    "q_keywords": [
+      "compensação",
+      "insolvência",
+      "mercadorias defeituosas"
+    ],
+    "relevance": "O acórdão deve apreciar quando nasceu crédito indemnizatório conexo e se pode ser compensado depois da declaração de insolvência."
+  },
+  {
+    "id": "new2_criminal_omission_aid_acquittal",
+    "q_semantic": "Condutor abandonou o local após atropelar peão mas foi absolvido de omissão de auxílio porque a vítima morreu instantaneamente",
+    "q_keywords": [
+      "omissão de auxílio",
+      "morte instantânea",
+      "absolvição"
+    ],
+    "relevance": "O acórdão deve absolver de omissão de auxílio porque a morte imediata tornou qualquer assistência impossível."
+  },
+  {
+    "id": "new2_criminal_omission_aid_conviction",
+    "q_semantic": "Condutor fugiu após atropelar pessoa ainda viva e foi condenado por omissão de auxílio apesar de terceiros chamarem ambulância",
+    "q_keywords": [
+      "omissão de auxílio",
+      "vítima com vida",
+      "condenação"
+    ],
+    "relevance": "O acórdão deve condenar por omissão de auxílio porque a vítima permanecia viva e necessitada de assistência."
+  },
+  {
+    "id": "new2_criminal_extortion_recording_admissible",
+    "q_semantic": "Vítima gravou sem consentimento conversa em que arguido exigia dinheiro e a gravação foi admitida como prova de extorsão",
+    "q_keywords": [
+      "gravação sem consentimento",
+      "extorsão",
+      "prova admissível"
+    ],
+    "relevance": "O acórdão deve admitir ou valorar gravação clandestina feita pela vítima para documentar exigências extorsivas."
+  },
+  {
+    "id": "new2_criminal_phone_extraction_inadmissible",
+    "q_semantic": "Polícia extraiu mensagens de telemóvel além do período ou aplicações autorizados judicialmente e a prova foi considerada inadmissível",
+    "q_keywords": [
+      "extração de telemóvel",
+      "autorização judicial",
+      "prova inadmissível"
+    ],
+    "relevance": "O acórdão deve excluir dados digitais porque a pesquisa excedeu os limites materiais da autorização judicial."
+  },
+  {
+    "id": "new2_criminal_money_laundering_acquittal",
+    "q_semantic": "Arguido recebeu transferências fracionadas e reenviou fundos para o estrangeiro mas foi absolvido de branqueamento por falta de prova da origem criminosa",
+    "q_keywords": [
+      "branqueamento",
+      "origem ilícita",
+      "absolvição"
+    ],
+    "relevance": "O acórdão deve absolver de branqueamento por insuficiência de prova da proveniência criminosa ou do conhecimento do arguido."
+  },
+  {
+    "id": "new2_criminal_money_laundering_conviction",
+    "q_semantic": "Arguido recebeu em sociedades sem atividade dinheiro proveniente de burlas, reteve comissão e foi condenado por branqueamento com prova indiciária",
+    "q_keywords": [
+      "branqueamento",
+      "sociedade sem atividade",
+      "condenação"
+    ],
+    "relevance": "O acórdão deve condenar por branqueamento através de inferências sobre circuito financeiro, ausência de atividade e comissão retida."
+  },
+  {
+    "id": "new2_labor_alcohol_test_no_countertest",
+    "q_semantic": "Motorista despedido após teste de álcool sem contraprova nem calibração demonstrada e despedimento declarado ilícito",
+    "q_keywords": [
+      "teste de álcool",
+      "contraprova",
+      "despedimento ilícito"
+    ],
+    "relevance": "O acórdão deve declarar ilícito o despedimento por insuficiência das garantias probatórias do teste de álcool."
+  },
+  {
+    "id": "new2_labor_transfer_serious_harm",
+    "q_semantic": "Trabalhadora transferida para estabelecimento distante incompatível com cuidados a filho dependente e resolução do contrato com justa causa",
+    "q_keywords": [
+      "transferência de local",
+      "prejuízo sério",
+      "filho dependente"
+    ],
+    "relevance": "O acórdão deve reconhecer prejuízo sério ligado às responsabilidades familiares e justa causa de resolução pela trabalhadora."
+  },
+  {
+    "id": "new2_labor_on_call_working_time",
+    "q_semantic": "Técnico em prevenção domiciliária obrigado a responder em poucos minutos e permanecer perto das instalações, contando toda a disponibilidade como tempo de trabalho",
+    "q_keywords": [
+      "prevenção domiciliária",
+      "tempo de resposta",
+      "tempo de trabalho"
+    ],
+    "relevance": "O acórdão deve qualificar toda a prevenção fora das instalações como tempo de trabalho devido às restrições impostas."
+  },
+  {
+    "id": "new2_admin_blocked_drain_flood",
+    "q_semantic": "Município responsabilizado por inundação depois de avisos repetidos sobre sarjeta obstruída que não foi limpa antes de chuva intensa",
+    "q_keywords": [
+      "sarjeta obstruída",
+      "inundação",
+      "responsabilidade municipal"
+    ],
+    "relevance": "O acórdão deve decidir o mérito da responsabilidade municipal por omissão de limpeza e nexo causal com a inundação."
+  },
+  {
+    "id": "new2_admin_hospital_epe_labor_jurisdiction",
+    "q_semantic": "Profissional com contrato individual em hospital EPE reclamou diferenças salariais e o litígio foi atribuído aos tribunais do trabalho",
+    "q_keywords": [
+      "hospital EPE",
+      "contrato individual",
+      "jurisdição laboral"
+    ],
+    "relevance": "O acórdão deve resolver conflito de jurisdição a favor dos tribunais do trabalho numa relação laboral privada com hospital EPE."
+  },
+  {
+    "id": "new2_tax_prior_home_reinvestment",
+    "q_semantic": "Contribuinte comprou nova habitação antes de vender a anterior e obteve exclusão de mais-valias por reinvestimento dentro do prazo legal",
+    "q_keywords": [
+      "mais-valias",
+      "reinvestimento anterior",
+      "habitação própria"
+    ],
+    "relevance": "O acórdão deve aceitar reinvestimento antecipado em habitação própria para exclusão ou redução das mais-valias."
+  },
+  {
+    "id": "new2_tax_nominal_manager_reversal",
+    "q_semantic": "Reversão fiscal contra gerente inscrito anulada porque a administração não provou exercício efetivo da gerência no período da dívida",
+    "q_keywords": [
+      "reversão fiscal",
+      "gerente nominal",
+      "gerência efetiva"
+    ],
+    "relevance": "O acórdão deve anular reversão por falta de prova de gerência efetiva, distinguindo gerente de direito e de facto."
+  },
+  {
+    "id": "new2_tax_withholding_beneficial_owner",
+    "q_semantic": "Juros pagos a entidade intermediária que os reenviou para país terceiro, sendo recusada isenção por não ser beneficiário efetivo",
+    "q_keywords": [
+      "retenção na fonte",
+      "beneficiário efetivo",
+      "juros"
+    ],
+    "relevance": "O acórdão deve recusar isenção por falta de qualidade de beneficiário efetivo da entidade intermediária."
+  },
+  {
+    "id": "new2_social_disability_after_application",
+    "q_semantic": "Incapacidade necessária para pensão de invalidez surgiu apenas durante a ação e foram recusados efeitos desde o requerimento inicial",
+    "q_keywords": [
+      "pensão de invalidez",
+      "incapacidade superveniente",
+      "data do requerimento"
+    ],
+    "relevance": "O acórdão deve recusar pensão ou retroatividade porque a incapacidade exigida surgiu após o pedido administrativo."
+  },
+  {
+    "id": "new2_social_survivor_de_facto_union",
+    "q_semantic": "Companheira sobreviva em união de facto obteve pensão de sobrevivência sem provar carência económica ou impossibilidade de alimentos familiares",
+    "q_keywords": [
+      "pensão de sobrevivência",
+      "união de facto",
+      "carência económica"
+    ],
+    "relevance": "O acórdão deve reconhecer pensão com base na união de facto e afastar exigência adicional de necessidade económica."
+  },
+  {
+    "id": "new2_procurement_abnormally_low_price_hearing",
+    "q_semantic": "Proposta com preço anormalmente baixo excluída sem convite prévio para explicar economias técnicas e adjudicação anulada",
+    "q_keywords": [
+      "preço anormalmente baixo",
+      "pedido de esclarecimentos",
+      "exclusão"
+    ],
+    "relevance": "O acórdão deve anular exclusão por falta de contraditório específico sobre preço anormalmente baixo."
+  },
+  {
+    "id": "new2_procurement_signature_power",
+    "q_semantic": "Proposta eletrónica excluída por certificado não demonstrar poderes do signatário apesar de procuração junta e exclusão considerada ilegal",
+    "q_keywords": [
+      "assinatura eletrónica",
+      "poderes de representação",
+      "procuração"
+    ],
+    "relevance": "O acórdão deve considerar ilegal a exclusão porque documento junto permitia verificar poderes de representação."
+  },
+  {
+    "id": "new2_immigration_expulsion_family",
+    "q_semantic": "Expulsão de estrangeiro residente desde criança anulada devido a filho menor vida familiar em Portugal e falta de ligações ao país de origem",
+    "q_keywords": [
+      "expulsão",
+      "residente desde criança",
+      "filho menor"
+    ],
+    "relevance": "O acórdão deve anular expulsão após ponderar residência prolongada, vínculos familiares e interesse do filho."
+  },
+  {
+    "id": "new2_immigration_family_reunification_income",
+    "q_semantic": "Recusa de reagrupamento familiar por falta de rendimentos próprios anulada porque rendimentos do cônjuge e habitação gratuita asseguravam subsistência",
+    "q_keywords": [
+      "reagrupamento familiar",
+      "rendimentos do cônjuge",
+      "habitação gratuita"
+    ],
+    "relevance": "O acórdão deve anular recusa por considerar suficientes recursos globais do agregado e não apenas rendimentos do requerente."
+  },
+  {
+    "id": "domain_tax_capital_gains_reinvestment",
+    "filters": {
+      "legal_domain": "Tributário"
+    },
+    "q_semantic": "Exclusão de tributação em IRS de mais-valias pela alienação de habitação própria e permanente com reinvestimento do valor de realização",
+    "q_keywords": [
+      "mais-valias",
+      "reinvestimento",
+      "habitação própria permanente"
+    ],
+    "relevance": "O acórdão deve apreciar a tributação em IRS de mais-valias imobiliárias e o regime de exclusão por reinvestimento em habitação própria e permanente."
+  },
+  {
+    "id": "domain_tax_reversal_subsidiary_liability",
+    "filters": {
+      "legal_domain": "Tributário"
+    },
+    "q_semantic": "Oposição à execução fiscal revertida contra o gerente por responsabilidade subsidiária, com discussão do exercício efetivo da gerência",
+    "q_keywords": [
+      "reversão",
+      "responsabilidade subsidiária",
+      "gerência de facto"
+    ],
+    "relevance": "O acórdão deve decidir a reversão de uma execução fiscal contra gerente ou administrador e a prova do exercício efetivo da gerência."
+  },
+  {
+    "id": "domain_insolvency_unaccented_filter",
+    "filters": {
+      "legal_domain": "insolvencia"
+    },
+    "q_semantic": "Qualificação da insolvência como culposa por o gerente ter dissipado o património da sociedade em prejuízo dos credores",
+    "q_keywords": [
+      "insolvência culposa",
+      "gerente",
+      "dissipação do património"
+    ],
+    "relevance": "O acórdão deve apreciar o incidente de qualificação da insolvência como culposa por atos de gerentes ou administradores."
+  },
+  {
+    "id": "domain_criminal_domestic_violence_accessory_penalty",
+    "filters": {
+      "legal_domain": "Penal"
+    },
+    "q_semantic": "Aplicação da pena acessória de proibição de contactos com a vítima no crime de violência doméstica",
+    "q_keywords": [
+      "violência doméstica",
+      "pena acessória",
+      "proibição de contactos"
+    ],
+    "relevance": "O acórdão deve apreciar a aplicação ou duração de penas acessórias no crime de violência doméstica."
+  },
+  {
+    "id": "domain_consumer_used_car_defect",
+    "filters": {
+      "legal_domain": "Consumo"
+    },
+    "q_semantic": "Direito do consumidor à resolução do contrato de compra e venda de automóvel usado com defeito dentro do prazo de garantia",
+    "q_keywords": [
+      "venda de bens de consumo",
+      "automóvel usado",
+      "defeito",
+      "resolução"
+    ],
+    "relevance": "O acórdão deve apreciar direitos do consumidor perante defeito em veículo comprado, como reparação, substituição, redução do preço ou resolução."
+  },
+  {
+    "id": "domain_labor_job_extinction_criteria",
+    "filters": {
+      "legal_domain": "Trabalho"
+    },
+    "q_semantic": "Ilicitude do despedimento por extinção do posto de trabalho por violação dos critérios de seleção do trabalhador a despedir",
+    "q_keywords": [
+      "extinção do posto de trabalho",
+      "critérios",
+      "despedimento ilícito"
+    ],
+    "relevance": "O acórdão deve apreciar a licitude de um despedimento por extinção do posto de trabalho e os critérios de seleção aplicados."
+  },
+  {
+    "id": "domain_family_shared_residence",
+    "filters": {
+      "legal_domain": "Família"
+    },
+    "q_semantic": "Fixação de residência alternada do menor com ambos os progenitores na regulação das responsabilidades parentais",
+    "q_keywords": [
+      "residência alternada",
+      "responsabilidades parentais",
+      "superior interesse da criança"
+    ],
+    "relevance": "O acórdão deve decidir sobre residência alternada ou partilhada de menor no âmbito das responsabilidades parentais."
+  },
+  {
+    "id": "domain_admin_urban_works_embargo",
+    "filters": {
+      "legal_domain": "Urbanismo"
+    },
+    "q_semantic": "Legalidade do embargo e ordem de demolição de obra realizada sem licença municipal",
+    "q_keywords": [
+      "embargo",
+      "demolição",
+      "obra ilegal",
+      "licenciamento"
+    ],
+    "relevance": "O acórdão deve apreciar medidas de tutela da legalidade urbanística, como embargo, demolição ou legalização de obras sem licença."
+  },
+  {
+    "id": "domain_tax_unaccented_vat_deduction",
+    "filters": {
+      "legal_domain": "tributario"
+    },
+    "q_semantic": "Direito à dedução do IVA suportado em faturas consideradas falsas pela Autoridade Tributária",
+    "q_keywords": [
+      "IVA",
+      "dedução",
+      "faturas falsas"
+    ],
+    "relevance": "O acórdão deve apreciar o direito à dedução de IVA relativamente a faturas que a administração tributária considera simuladas ou falsas."
+  }
+]
