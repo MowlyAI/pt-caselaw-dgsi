@@ -28,8 +28,10 @@ import asyncpg
 import httpx
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
+
+from api.legal_areas import CANONICAL_AREAS, resolve_legal_areas
 
 # Use absolute path so the server works regardless of the working directory
 # (e.g. when launched as a Claude Desktop subprocess from the home directory).
@@ -383,9 +385,12 @@ class Filters(BaseModel):
     legal_domain: Optional[str] = Field(
         None,
         description=(
-            "Substring match (case-insensitive, ILIKE `%value%`) against the "
-            "`legal_domain` column. The corpus has 6000+ distinct values, so "
-            "use a substring rather than an exact value (e.g. `insolvencia`)."
+            "Legal area filter, accent- and case-insensitive. The value is "
+            "resolved to canonical areas (see `legal_areas` in `GET /filters`), "
+            "including synonyms — `fiscal` → Direito Tributário, `criminal` → "
+            "Direito Penal + Processual Penal, `penal` → both penal areas. "
+            "Values that match no canonical area fall back to a substring "
+            "match on the raw extracted domain."
         ),
         examples=["insolvencia"],
     )
@@ -800,26 +805,47 @@ class SearchResponse(BaseModel):
     )
 
 
+def _legal_domain_clause(column: str, value: str, idx: int) -> tuple[str, Any]:
+    """Filter on canonical legal areas (accent/synonym-insensitive, via
+    legal_domain_map); fall back to an unaccented substring match when the
+    input resolves to no canonical area."""
+    areas = resolve_legal_areas(value)
+    if areas:
+        return (
+            f"{column} IN (SELECT raw FROM legal_domain_map WHERE areas && ${idx}::text[])",
+            areas,
+        )
+    return f"unaccent({column}) ILIKE unaccent(${idx})", f"%{value}%"
+
+
+# Non-canonical copies of decisions DGSI published more than once
+# (scripts/mark_duplicates.py) are never returned by search.
+NOT_DUPLICATE_DOC_IDS = (
+    "NOT IN (SELECT doc_id FROM documents WHERE duplicate_of IS NOT NULL)"
+)
+
+
 def _build_filters(
     f: Optional[Filters], start_idx: int = 1, alias: str = ""
 ) -> tuple[str, list[Any]]:
     """Build a SQL WHERE fragment (without 'WHERE'/'AND' prefix) and the
     matching positional params list. The first placeholder will be `$start_idx`.
-    Returns ("", []) when no filters are set.
+    Always excludes documents marked as duplicates.
     """
-    if f is None:
-        return "", []
-    clauses: list[str] = []
-    params: list[Any] = []
-    idx = start_idx
     prefix = f"{alias}." if alias else ""
+    clauses: list[str] = [f"{prefix}duplicate_of IS NULL"]
+    params: list[Any] = []
+    if f is None:
+        return clauses[0], params
+    idx = start_idx
     if f.court:
         clauses.append(f"{prefix}court_short = ANY(${idx}::text[])")
         params.append(f.court)
         idx += 1
     if f.legal_domain:
-        clauses.append(f"{prefix}legal_domain ILIKE ${idx}")
-        params.append(f"%{f.legal_domain}%")
+        clause, param = _legal_domain_clause(f"{prefix}legal_domain", f.legal_domain, idx)
+        clauses.append(clause)
+        params.append(param)
         idx += 1
     if f.is_auj is not None:
         clauses.append(f"{prefix}is_auj = ${idx}")
@@ -1097,38 +1123,74 @@ async def _search_vectors(q: str, fields: list[str], limit: int,
 FTS_CANDIDATE_CAP = int(os.getenv("FTS_CANDIDATE_CAP", "1500"))
 
 
+def _normalize_portuguese_fts_query(query: str) -> str:
+    """Match the unaccented Portuguese tsvector while preserving operators."""
+    normalized = unicodedata.normalize("NFKD", query)
+    normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+    return normalized.replace("“", '"').replace("”", '"').replace("’", "'")
+
+
 async def _search_fts(q: str, limit: int,
                       filters: Optional[Filters] = None
                       ) -> list[tuple[str, float]]:
-    """Full-text search via the GIN `fts` index.
+    """Full-text search, ranked over *all* matches.
 
-    Broad queries can match >100k rows; ranking each one would force a heap
-    fetch over the full tsvector column (multi-second). We cap the candidate
-    set to FTS_CANDIDATE_CAP rows (in index order), then rank within that.
+    `documents.fts` includes the full decision text, so ranking every match
+    means reading large TOASTed tsvectors (~20s for a broad query). Matches
+    are therefore ranked on `document_fts_core` (keywords, descriptors,
+    summary, legal question, ratio — small enough to rank exhaustively).
+    Documents matching only in the body text are appended after, from a
+    capped candidate set ranked on the full tsvector.
     """
-    # $1 = q, filter params start at $2, then $limit_idx, then $cap_idx.
-    filt_sql, filt_params = _build_filters(filters, start_idx=2)
-    where = "fts @@ websearch_to_tsquery('portuguese', $1)"
-    if filt_sql:
-        where += f" AND {filt_sql}"
+    normalized_q = _normalize_portuguese_fts_query(q)
+    # $1 = q, filter params start at $2, then $limit_idx.
+    filt_sql, filt_params = _build_filters(filters, start_idx=2, alias="d")
     limit_idx = 2 + len(filt_params)
-    cap_idx = limit_idx + 1
-    sql = (
-        "WITH cands AS ("
-        "  SELECT doc_id, fts "
-        "    FROM documents "
-        f"   WHERE {where} "
-        f"   LIMIT ${cap_idx}"
-        ") "
-        "SELECT doc_id, "
-        "       ts_rank_cd(fts, websearch_to_tsquery('portuguese', $1))::real AS rank "
-        "  FROM cands "
-        " ORDER BY rank DESC "
+    if filt_params:
+        core_from = "document_fts_core c JOIN documents d ON d.doc_id = c.doc_id"
+        core_filter = filt_sql
+    else:
+        # No user filters: skip the per-match documents lookup.
+        core_from = "document_fts_core c"
+        core_filter = f"c.doc_id {NOT_DUPLICATE_DOC_IDS}"
+    core_sql = (
+        "SELECT c.doc_id, ts_rank_cd(c.fts_core, websearch_to_tsquery('portuguese', $1))::real AS rank "
+        f"  FROM {core_from} "
+        " WHERE c.fts_core @@ websearch_to_tsquery('portuguese', $1) "
+        f"   AND {core_filter} "
+        " ORDER BY rank DESC, c.doc_id "
         f" LIMIT ${limit_idx}"
     )
     async with db_pool.acquire() as conn:
-        rows = await conn.fetch(sql, q, *filt_params, limit, FTS_CANDIDATE_CAP)
-    return [(r["doc_id"], float(r["rank"])) for r in rows]
+        core_rows = await conn.fetch(core_sql, normalized_q, *filt_params, limit)
+        hits = [(r["doc_id"], float(r["rank"])) for r in core_rows]
+        if len(hits) >= limit:
+            return hits
+
+        # Body-only matches: $limit_idx = remaining slots, then the cap and
+        # the already-returned ids.
+        cap_idx = limit_idx + 1
+        exclude_idx = limit_idx + 2
+        body_sql = (
+            "WITH cands AS ("
+            "  SELECT d.doc_id, d.fts "
+            "    FROM documents d "
+            "   WHERE d.fts @@ websearch_to_tsquery('portuguese', $1) "
+            f"    AND {filt_sql} "
+            f"    AND NOT (d.doc_id = ANY(${exclude_idx}::text[])) "
+            f"   LIMIT ${cap_idx}"
+            ") "
+            "SELECT doc_id, "
+            "       ts_rank_cd(fts, websearch_to_tsquery('portuguese', $1))::real AS rank "
+            "  FROM cands "
+            " ORDER BY rank DESC "
+            f" LIMIT ${limit_idx}"
+        )
+        body_rows = await conn.fetch(
+            body_sql, normalized_q, *filt_params, limit - len(hits),
+            FTS_CANDIDATE_CAP, [doc_id for doc_id, _ in hits],
+        )
+    return hits + [(r["doc_id"], float(r["rank"])) for r in body_rows]
 
 
 def _rrf_merge_multi(per_source: dict[str, list[tuple[str, float]]],
@@ -1169,14 +1231,26 @@ async def root():
     tags=["health"],
     summary="Liveness probe",
     description=(
-        "Returns `healthy` when both the database pool and the HTTP client "
-        "(used to call the embedding provider) are initialised. Does not "
-        "issue any database query, so it is safe to call at high frequency."
+        "Returns `healthy` when the HTTP client is initialised and the "
+        "database answers a trivial query within 2 seconds; otherwise "
+        "returns **503** with `status: unhealthy` and the failing component."
     ),
+    responses={503: {"description": "Database unreachable or not initialised."}},
 )
 async def health():
-    ok = db_pool is not None and http_client is not None
-    return {"status": "healthy" if ok else "degraded"}
+    if db_pool is None or http_client is None:
+        return JSONResponse({"status": "unhealthy", "reason": "not initialised"}, status_code=503)
+    try:
+        async with db_pool.acquire(timeout=2) as conn:
+            await conn.fetchval("SELECT 1", timeout=2)
+    except Exception as exc:
+        logger.warning("health check: database unreachable: %s", exc)
+        return JSONResponse({"status": "unhealthy", "reason": "database"}, status_code=503)
+    return {"status": "healthy"}
+
+
+STATS_CACHE_TTL = int(os.getenv("STATS_CACHE_TTL", "600"))  # seconds
+_stats_cache: Optional[tuple[float, dict]] = None
 
 
 @app.get(
@@ -1187,20 +1261,30 @@ async def health():
         "Returns the total number of documents, how many have each of the "
         "three embedding columns populated, the embedding model in use, and "
         "the HNSW `ef_search` setting. Use this to sanity-check ingestion "
-        "coverage before relying on a search variant."
+        "coverage before relying on a search variant. Cached in-memory for "
+        "`STATS_CACHE_TTL` seconds (default 600)."
     ),
 )
 async def stats():
+    # The counts scan the whole documents table; they only change when the
+    # ETL runs, so serve them from a cache.
+    global _stats_cache
+    now = time.time()
+    if _stats_cache and (now - _stats_cache[0]) < STATS_CACHE_TTL:
+        return {**_stats_cache[1], "cached": True,
+                "cache_age_seconds": int(now - _stats_cache[0])}
     async with db_pool.acquire() as conn:
         counts = await conn.fetchrow(
             "SELECT count(*) AS total, "
+            "       count(*) FILTER (WHERE duplicate_of IS NOT NULL) AS duplicates, "
             "       count(*) FILTER (WHERE embedding IS NOT NULL) AS embedding, "
             "       count(*) FILTER (WHERE embedding_context IS NOT NULL) AS embedding_context, "
             "       count(*) FILTER (WHERE embedding_ratio IS NOT NULL) AS embedding_ratio "
             "  FROM documents"
         )
-    return {
+    payload = {
         "total_documents": counts["total"],
+        "duplicates_excluded_from_search": counts["duplicates"],
         "embeddings": {
             "embedding": counts["embedding"],
             "embedding_context": counts["embedding_context"],
@@ -1209,6 +1293,8 @@ async def stats():
         "embedding_model": EMBEDDING_MODEL,
         "hnsw_ef_search": HNSW_EF_SEARCH,
     }
+    _stats_cache = (now, payload)
+    return {**payload, "cached": False, "cache_age_seconds": 0}
 
 
 def _resolve_queries(req: SearchRequest, need_sem: bool, need_fts: bool
@@ -1370,6 +1456,15 @@ async def _compute_filters_payload() -> dict:
             " WHERE is_auj IS NOT NULL "
             " GROUP BY is_auj ORDER BY value DESC"
         )
+        area_rows = await conn.fetch(
+            "SELECT area AS value, count(*) AS count "
+            "  FROM documents d "
+            "  JOIN legal_domain_map m ON m.raw = d.legal_domain, "
+            "       unnest(m.areas) AS area "
+            " WHERE d.duplicate_of IS NULL "
+            " GROUP BY area ORDER BY count DESC"
+        )
+    counts_by_area = {r["value"]: r["count"] for r in area_rows}
     return {
         "courts": [{"value": r["value"], "count": r["count"]} for r in court_rows],
         "decision_date": {
@@ -1377,6 +1472,9 @@ async def _compute_filters_payload() -> dict:
             "max": date_row["max"].isoformat() if date_row["max"] else None,
         },
         "is_auj": [{"value": r["value"], "count": r["count"]} for r in is_auj_rows],
+        "legal_areas": [
+            {"value": area, "count": counts_by_area.get(area, 0)} for area in CANONICAL_AREAS
+        ],
     }
 
 
@@ -1391,7 +1489,9 @@ async def _compute_filters_payload() -> dict:
         "document counts. Pass these directly as `courts: [\"STJ\", \"TRP\"]`.\n"
         "* `decision_date` — `min` and `max` dates in the corpus, useful for "
         "bounding `from_date` / `to_date`.\n"
-        "* `is_auj` — count of binding-precedent (AUJ) decisions vs regular ones.\n\n"
+        "* `is_auj` — count of binding-precedent (AUJ) decisions vs regular ones.\n"
+        "* `legal_areas` — canonical legal areas with document counts. Pass one "
+        "as `filters.legal_domain`.\n\n"
         "**Caching** — results are cached in-memory for `FILTERS_CACHE_TTL` "
         "seconds (default 3600). The response echoes `cached` and "
         "`cache_age_seconds`. Pass `refresh=true` to force a recompute."
@@ -1694,8 +1794,9 @@ def _build_citation_filters(
         params.append(f.court)
         idx += 1
     if f.legal_domain:
-        clauses.append(f"{prefix}legal_domain ILIKE ${idx}")
-        params.append(f"%{f.legal_domain}%")
+        clause, param = _legal_domain_clause(f"{prefix}legal_domain", f.legal_domain, idx)
+        clauses.append(clause)
+        params.append(param)
         idx += 1
     if f.is_auj is not None:
         clauses.append(f"{prefix}is_auj = ${idx}")
@@ -1811,10 +1912,13 @@ def _build_legislation_lookup_query(
             "  SELECT m.doc_id, m.decision_date "
             "  FROM matched_doc_ids m "
             "  JOIN documents d ON d.doc_id = m.doc_id "
-            f"  WHERE {doc_filter_sql} "
+            f"  WHERE {doc_filter_sql} AND d.duplicate_of IS NULL "
         )
     else:
-        ranked_source = "  SELECT m.doc_id, m.decision_date FROM matched_doc_ids m "
+        ranked_source = (
+            "  SELECT m.doc_id, m.decision_date FROM matched_doc_ids m "
+            f"  WHERE m.doc_id {NOT_DUPLICATE_DOC_IDS} "
+        )
     sql = (
         "WITH matched AS ("
         + " UNION ALL ".join(selects)
