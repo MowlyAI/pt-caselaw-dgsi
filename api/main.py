@@ -38,9 +38,11 @@ load_dotenv(_ENV_FILE)
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "google/gemini-embedding-001")
+# Must match the model that produced the stored vectors (verified 2026-10).
+EMBEDDING_MODEL = "google/gemini-embedding-001"
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
-LLM_MODEL = os.getenv("LLM_MODEL", "xiaomi/mimo-v2-flash")
+# Fast model for short legislation-query canonicalization/selection calls.
+LLM_MODEL = "google/gemini-3.1-flash-lite"
 
 DB_HOST = os.getenv("SUPABASE_DB_HOST", "")
 DB_PORT = int(os.getenv("SUPABASE_DB_PORT", "5432"))

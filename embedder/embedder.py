@@ -20,7 +20,8 @@ from typing import Optional
 import httpx
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "google/gemini-embedding-001")
+# Must match the model that produced the stored vectors (verified 2026-10).
+EMBEDDING_MODEL = "google/gemini-embedding-001"
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
 
 # Qwen3 supports 32K tokens; we set a generous char limit.

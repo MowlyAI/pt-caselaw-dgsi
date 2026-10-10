@@ -11,7 +11,8 @@ load_dotenv('.env.local')
 
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 OPENROUTER_BASE = 'https://openrouter.ai/api/v1'
-EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'google/gemini-embedding-001')
+# Must match the model that produced the stored vectors (verified 2026-10).
+EMBEDDING_MODEL = 'google/gemini-embedding-001'
 EMBEDDING_DIM = int(os.getenv('EMBEDDING_DIMENSION', '1024'))
 BATCH_SIZE = 50   # texts per embedding request
 CONCURRENCY = 1   # serial to avoid Gemini rate limits

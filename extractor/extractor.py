@@ -227,7 +227,9 @@ def _is_jurisprudence_unification(
 
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-MODEL = os.getenv("LLM_MODEL", "xiaomi/mimo-v2-flash")
+# Chosen via scripts/benchmark_models.py (2026-10); xiaomi/mimo-v2-flash, used
+# for the April 2026 corpus, has been removed from OpenRouter.
+MODEL = "openai/gpt-6-luna"
 MAX_INPUT_CHARS = int(os.getenv("LLM_MAX_INPUT_CHARS", "80000"))
 
 
