@@ -885,8 +885,13 @@ def _build_filters(
 
 
 async def embed_query(text: str) -> list[float]:
-    payload = {"model": EMBEDDING_MODEL, "input": text, "dimensions": EMBEDDING_DIM}
-    logger.debug("embed_query: model=%s dim=%s input_len=%d", EMBEDDING_MODEL, EMBEDDING_DIM, len(text))
+    return (await embed_texts([text]))[0]
+
+
+async def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed several texts in one request (results in input order)."""
+    payload = {"model": EMBEDDING_MODEL, "input": texts, "dimensions": EMBEDDING_DIM}
+    logger.debug("embed_texts: model=%s dim=%s n=%d", EMBEDDING_MODEL, EMBEDDING_DIM, len(texts))
     resp = None
     for attempt in range(EMBEDDING_MAX_RETRIES + 1):
         try:
@@ -923,8 +928,8 @@ async def embed_query(text: str) -> list[float]:
         )
         err = body.get("error", body)
         raise HTTPException(502, f"Embedding API returned 200 but no 'data' key: {err}")
-    logger.debug("embed_query: got %d floats", len(body["data"][0]["embedding"]))
-    return body["data"][0]["embedding"]
+    data = sorted(body["data"], key=lambda item: item.get("index", 0))
+    return [item["embedding"] for item in data]
 
 
 _LEGISLATION_NORMALIZE_PROMPT = """You are a Portuguese legal citation normalizer.
@@ -1220,6 +1225,112 @@ async def _search_vectors(q: str, fields: list[str], limit: int,
         *(_vector_query(emb_lit, f, limit, filters) for f in fields)
     )
     return dict(zip(fields, results))
+
+
+# ---------------------------------------------------------------------------
+# Query expansion
+# ---------------------------------------------------------------------------
+# Specific fact-pattern queries often miss relevant decisions that describe the
+# same situation in other words. An LLM rewrites the query in the style of the
+# stored `semantic_search_query` sentences (what each decision's `embedding`
+# is built from) and proposes alternative legal keywords; each variant is
+# searched as an extra RRF source. The reranker still sees only the original
+# query. Failures or timeouts silently skip expansion.
+QUERY_EXPANSION = os.getenv("QUERY_EXPANSION", "false").lower() == "true"
+QUERY_EXPANSION_MODEL = "google/gemini-3.1-flash-lite"
+QUERY_EXPANSION_TIMEOUT = float(os.getenv("QUERY_EXPANSION_TIMEOUT", "6"))
+# RRF weight of each variant source relative to the original query's source.
+QUERY_EXPANSION_WEIGHT = float(os.getenv("QUERY_EXPANSION_WEIGHT", "0.5"))
+
+_QUERY_EXPANSION_PROMPT = """És um jurista português especialista em pesquisa de jurisprudência.
+Um utilizador procura acórdãos portugueses.
+
+Consulta: {semantic}
+Termos-chave do utilizador: {keywords}
+
+Gera variantes para melhorar a recuperação:
+1. "reformulacoes": 3 frases em português (cada uma com no máximo 30 palavras) que
+   descrevam "que tipo de caso é este", com os factos essenciais e a questão jurídica,
+   usando a terminologia que um tribunal usaria (nomes de institutos jurídicos,
+   figuras processuais). Cada frase deve usar palavras diferentes das outras.
+2. "palavras_chave": 2 conjuntos alternativos de 2 a 4 termos jurídicos curtos
+   (sinónimos ou designações técnicas) que um acórdão relevante conteria.
+Não inventes factos que alterem o sentido da consulta."""
+
+_QUERY_EXPANSION_SCHEMA = {
+    "name": "query_expansion",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "reformulacoes": {"type": "array", "items": {"type": "string"}},
+            "palavras_chave": {
+                "type": "array",
+                "items": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "required": ["reformulacoes", "palavras_chave"],
+        "additionalProperties": False,
+    },
+}
+
+
+async def _expand_query(
+    semantic: Optional[str], keywords: Optional[str]
+) -> tuple[list[str], list[str]]:
+    """Return (semantic rephrasings, alternative keyword queries); ([], []) on failure."""
+    if not QUERY_EXPANSION or not http_client or not OPENROUTER_API_KEY:
+        return [], []
+    prompt = _QUERY_EXPANSION_PROMPT.format(
+        semantic=semantic or "(não indicada)", keywords=keywords or "(não indicados)"
+    )
+    try:
+        resp = await http_client.post(
+            f"{OPENROUTER_BASE}/chat/completions",
+            json={
+                "model": QUERY_EXPANSION_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "response_format": {"type": "json_schema", "json_schema": _QUERY_EXPANSION_SCHEMA},
+            },
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            timeout=QUERY_EXPANSION_TIMEOUT,
+        )
+        resp.raise_for_status()
+        parsed = _json.loads(resp.json()["choices"][0]["message"]["content"])
+    except Exception as exc:
+        logger.warning("query expansion failed; searching original query only: %s", exc)
+        return [], []
+    rephrasings = [s.strip() for s in parsed.get("reformulacoes", []) if isinstance(s, str) and s.strip()][:3]
+    keyword_sets = [
+        " ".join(t.strip() for t in terms if isinstance(t, str) and t.strip())
+        for terms in parsed.get("palavras_chave", [])[:2]
+        if isinstance(terms, list)
+    ]
+    return rephrasings, [k for k in keyword_sets if k]
+
+
+async def _search_expansions(
+    rephrasings: list[str],
+    keyword_sets: list[str],
+    fields: list[str],
+    use_fts: bool,
+    limit: int,
+    filters: Optional[Filters],
+) -> dict[str, list[tuple[str, float]]]:
+    """Search every variant; sources are named '<field>~<n>' and 'fts~<n>'."""
+    tasks: dict[str, Any] = {}
+    if rephrasings and fields:
+        embeddings = await embed_texts(rephrasings)
+        for n, emb in enumerate(embeddings, start=1):
+            emb_lit = "[" + ",".join(f"{x:.7f}" for x in emb) + "]"
+            for field in fields:
+                tasks[f"{field}~{n}"] = _vector_query(emb_lit, field, limit, filters)
+    if use_fts:
+        for n, kw in enumerate(keyword_sets, start=1):
+            tasks[f"fts~{n}"] = _search_fts(kw, limit, filters)
+    results = await asyncio.gather(*tasks.values())
+    return dict(zip(tasks.keys(), results))
 
 
 FTS_CANDIDATE_CAP = int(os.getenv("FTS_CANDIDATE_CAP", "1500"))
@@ -1662,17 +1773,23 @@ async def search_hybrid(
     effective_filters = req.resolved_filters()
 
     try:
-        if vec_fields and use_fts:
-            per_vec, fts_hits = await asyncio.gather(
-                _search_vectors(sem_q, vec_fields, over, effective_filters),
-                _search_fts(kw_q, over, effective_filters),
-            )
-        elif vec_fields:
-            per_vec = await _search_vectors(sem_q, vec_fields, over, effective_filters)
-            fts_hits = []
-        else:
-            per_vec = {}
-            fts_hits = await _search_fts(kw_q, over, effective_filters)
+        # Query expansion runs concurrently with the original-query searches.
+        expansion_task = asyncio.create_task(_expand_query(sem_q, kw_q))
+        try:
+            if vec_fields and use_fts:
+                per_vec, fts_hits = await asyncio.gather(
+                    _search_vectors(sem_q, vec_fields, over, effective_filters),
+                    _search_fts(kw_q, over, effective_filters),
+                )
+            elif vec_fields:
+                per_vec = await _search_vectors(sem_q, vec_fields, over, effective_filters)
+                fts_hits = []
+            else:
+                per_vec = {}
+                fts_hits = await _search_fts(kw_q, over, effective_filters)
+        except BaseException:
+            expansion_task.cancel()
+            raise
 
         per_source: dict[str, list[tuple[str, float]]] = dict(per_vec)
         if use_fts:
@@ -1681,7 +1798,22 @@ async def search_hybrid(
         if use_fts:
             weights["fts"] = req.weights.fts
 
+        rephrasings, keyword_sets = await expansion_task
+        if rephrasings or keyword_sets:
+            expanded = await _search_expansions(
+                rephrasings, keyword_sets, vec_fields, use_fts, over, effective_filters
+            )
+            per_source.update(expanded)
+            for source in expanded:
+                base = source.split("~", 1)[0]
+                weights[source] = weights[base] * QUERY_EXPANSION_WEIGHT
+
         merged, ranks = _rrf_merge_multi(per_source, weights, k=req.rrf_k)
+        # Expose ranks for the four documented sources only.
+        ranks = {
+            doc_id: {s: r for s, r in doc_ranks.items() if s in ALL_SOURCES} or None
+            for doc_id, doc_ranks in ranks.items()
+        }
         rerank_count = min(len(merged), max(req.limit, RERANK_CANDIDATES))
         docs = await _fetch_docs([d for d, _ in merged[:rerank_count]])
         merged = await _rerank_candidates(

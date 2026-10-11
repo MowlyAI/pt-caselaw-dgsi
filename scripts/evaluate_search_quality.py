@@ -291,7 +291,7 @@ async def _run(args: argparse.Namespace) -> None:
         password=search_api.DB_PASSWORD,
         database=search_api.DB_NAME,
         min_size=1,
-        max_size=4,
+        max_size=10,  # same as the API pool
         statement_cache_size=0,
         command_timeout=60,
         init=search_api._init_connection,
