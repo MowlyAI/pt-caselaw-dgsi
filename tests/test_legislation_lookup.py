@@ -179,6 +179,7 @@ class HybridRerankTests(unittest.IsolatedAsyncioTestCase):
         self.original_client = main.http_client
         self.original_key = main.OPENROUTER_API_KEY
         self.original_weight = main.RERANK_WEIGHT
+        self.original_guard = main.RERANK_LEXICAL_GUARD
         main.OPENROUTER_API_KEY = "test-key"
         main.RERANK_WEIGHT = 4.0
         self.docs = {
@@ -190,6 +191,7 @@ class HybridRerankTests(unittest.IsolatedAsyncioTestCase):
         main.http_client = self.original_client
         main.OPENROUTER_API_KEY = self.original_key
         main.RERANK_WEIGHT = self.original_weight
+        main.RERANK_LEXICAL_GUARD = self.original_guard
 
     async def test_reranker_changes_order_without_new_response_source(self):
         main.http_client = _FakeRerankClient([
@@ -230,7 +232,33 @@ class HybridRerankTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls, 2)
         self.assertEqual([doc_id for doc_id, _ in reranked], ["b", "a"])
 
+    def _six_candidates(self):
+        docs = {
+            str(index): {"doc_id": str(index), "summary": str(index), "metadata": {}}
+            for index in range(1, 7)
+        }
+        main.http_client = _FakeRerankClient([
+            {"index": 5, "relevance_score": 0.99},
+            {"index": 0, "relevance_score": 0.8},
+            {"index": 1, "relevance_score": 0.7},
+            {"index": 2, "relevance_score": 0.6},
+            {"index": 3, "relevance_score": 0.5},
+            {"index": 4, "relevance_score": 0.4},
+        ])
+        merged = [(str(index), 0.1 - index * 0.001) for index in range(1, 7)]
+        return docs, merged
+
+    async def test_reranker_can_promote_nonlexical_candidate_by_default(self):
+        docs, merged = self._six_candidates()
+
+        reranked = await main._rerank_candidates(
+            "consulta", "termos", merged, docs, 50, lexical_promotion_ids=set()
+        )
+
+        self.assertIn("6", [doc_id for doc_id, _ in reranked[:5]])
+
     async def test_nonlexical_candidate_cannot_displace_original_top_five(self):
+        main.RERANK_LEXICAL_GUARD = True
         docs = {
             str(index): {"doc_id": str(index), "summary": str(index), "metadata": {}}
             for index in range(1, 7)
