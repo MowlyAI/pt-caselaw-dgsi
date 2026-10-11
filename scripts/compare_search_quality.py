@@ -37,7 +37,7 @@ async def _run(args: argparse.Namespace) -> None:
 
     frozen_qrels = json.loads(args.qrels_input.read_text()) if args.qrels_input else None
     api_key = search_api.OPENROUTER_API_KEY
-    if frozen_qrels is None:
+    if frozen_qrels is None or args.judge_missing:
         if not api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
         search_api.http_client = httpx.AsyncClient(timeout=120)
@@ -78,7 +78,26 @@ async def _run(args: argparse.Namespace) -> None:
                 for result in report_case["results"]
             })
             if frozen_qrels is not None:
-                case_qrels = frozen_qrels.get(case_id, {})
+                case_qrels = dict(frozen_qrels.get(case_id, {}))
+                missing = [doc_id for doc_id in doc_ids if doc_id not in case_qrels]
+                if missing and args.judge_missing:
+                    # Grade only documents the frozen labels have not seen, so
+                    # every variant is scored against one consistent label set.
+                    docs_by_id = await search_api._fetch_docs(missing)
+                    judged_ids = [doc_id for doc_id in missing if doc_id in docs_by_id]
+                    grades, usage = await evaluator._judge(
+                        search_api.http_client,
+                        api_key,
+                        args.judge_model,
+                        case,
+                        [docs_by_id[doc_id] for doc_id in judged_ids],
+                    )
+                    total_cost += float(usage.get("cost") or 0)
+                    for idx, doc_id in enumerate(judged_ids):
+                        case_qrels[doc_id] = {
+                            "grade": grades[idx]["relevance"],
+                            "reason": grades[idx]["reason"],
+                        }
                 grades_by_id = {
                     doc_id: case_qrels.get(doc_id, {}).get("grade", 0)
                     for doc_id in doc_ids
@@ -202,6 +221,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--qrels-output", type=Path, required=True)
     parser.add_argument("--qrels-input", type=Path)
+    parser.add_argument(
+        "--judge-missing",
+        action="store_true",
+        help="With --qrels-input, judge documents the frozen labels do not cover",
+    )
     parser.add_argument("--fail-on-regression", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--judge-model", default=evaluator.DEFAULT_JUDGE_MODEL)

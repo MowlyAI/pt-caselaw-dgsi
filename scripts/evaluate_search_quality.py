@@ -277,6 +277,11 @@ async def _run(args: argparse.Namespace) -> None:
     if args.disable_reranker:
         search_api.RERANK_WEIGHT = 0
         search_api.LEGISLATION_RERANK_WEIGHT = 0
+    for name, value in (args.api_setting or []):
+        if not hasattr(search_api, name):
+            raise ValueError(f"api.main has no setting {name!r}")
+        current = getattr(search_api, name)
+        setattr(search_api, name, json.loads(value) if not isinstance(current, str) else value)
     frozen_qrels = json.loads(args.qrels.read_text()) if args.qrels else None
     search_api.http_client = httpx.AsyncClient(timeout=60)
     search_api.db_pool = await asyncpg.create_pool(
@@ -443,6 +448,7 @@ async def _run(args: argparse.Namespace) -> None:
             "results_per_case": args.results,
             "overfetch": args.overfetch,
             "weights": args.weights,
+            "api_settings": dict(args.api_setting or []),
             "judge_model": args.judge_model,
             "embedding_model": search_api.EMBEDDING_MODEL,
             "reranker_enabled": not args.disable_reranker,
@@ -487,6 +493,13 @@ def _parse_args() -> argparse.Namespace:
         type=json.loads,
         help='Hybrid source weights as JSON, e.g. \'{"embedding":0,"embedding_context":0,'
              '"embedding_ratio":0,"fts":1}\' to benchmark FTS alone',
+    )
+    parser.add_argument(
+        "--api-setting",
+        action="append",
+        type=lambda s: tuple(s.split("=", 1)),
+        help="Override an api.main constant for this run, e.g. RERANK_WEIGHT=20 "
+             "or RERANK_LEXICAL_GUARD=false; repeatable",
     )
     parser.add_argument(
         "--disable-reranker",

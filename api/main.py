@@ -47,8 +47,15 @@ EMBEDDING_MAX_RETRIES = int(os.getenv("EMBEDDING_MAX_RETRIES", "4"))
 # Fast model for short legislation-query canonicalization/selection calls.
 LLM_MODEL = "google/gemini-3.1-flash-lite"
 RERANK_MODEL = "voyageai/rerank-2.5"
-RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "40"))
-RERANK_WEIGHT = float(os.getenv("RERANK_WEIGHT", "2.0"))
+# Reranker defaults chosen with scripts/evaluate_search_quality.py (2026-10):
+# letting Voyage decide the order (weight 20 vs RRF's ~1/(k+rank) per source)
+# over the top 150 fused candidates raised hybrid P@5 0.677 -> 0.746.
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "150"))
+RERANK_WEIGHT = float(os.getenv("RERANK_WEIGHT", "20.0"))
+# When True, reranked documents that were neither in the fused top 5 nor FTS
+# hits are kept out of the top 5. Off by default: it blocked the reranker from
+# promoting strong vector-only matches (17 cases improved, 8 lost one result).
+RERANK_LEXICAL_GUARD = False
 RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "30"))
 LEGISLATION_RERANK_WEIGHT = float(os.getenv("LEGISLATION_RERANK_WEIGHT", "4.0"))
 LEGISLATION_RESOLVER_MODEL = "google/gemini-3.1-pro-preview"
@@ -1426,7 +1433,7 @@ async def _rerank_candidates(
             for doc_id, score in merged
             if doc_id in rerank_positions
         ]
-        if lexical_promotion_ids is not None and len(merged) > 5:
+        if RERANK_LEXICAL_GUARD and lexical_promotion_ids is not None and len(merged) > 5:
             original_top_ids = {doc_id for doc_id, _ in merged[:5]}
             top_floor = min(
                 score for doc_id, score in rescored if doc_id in original_top_ids
