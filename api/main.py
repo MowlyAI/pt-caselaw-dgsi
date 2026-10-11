@@ -43,8 +43,15 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 # Must match the model that produced the stored vectors (verified 2026-10).
 EMBEDDING_MODEL = "google/gemini-embedding-001"
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
+EMBEDDING_MAX_RETRIES = int(os.getenv("EMBEDDING_MAX_RETRIES", "4"))
 # Fast model for short legislation-query canonicalization/selection calls.
 LLM_MODEL = "google/gemini-3.1-flash-lite"
+RERANK_MODEL = "voyageai/rerank-2.5"
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "40"))
+RERANK_WEIGHT = float(os.getenv("RERANK_WEIGHT", "2.0"))
+RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "30"))
+LEGISLATION_RERANK_WEIGHT = float(os.getenv("LEGISLATION_RERANK_WEIGHT", "4.0"))
+LEGISLATION_RESOLVER_MODEL = "google/gemini-3.1-pro-preview"
 
 DB_HOST = os.getenv("SUPABASE_DB_HOST", "")
 DB_PORT = int(os.getenv("SUPABASE_DB_PORT", "5432"))
@@ -873,11 +880,28 @@ def _build_filters(
 async def embed_query(text: str) -> list[float]:
     payload = {"model": EMBEDDING_MODEL, "input": text, "dimensions": EMBEDDING_DIM}
     logger.debug("embed_query: model=%s dim=%s input_len=%d", EMBEDDING_MODEL, EMBEDDING_DIM, len(text))
-    resp = await http_client.post(
-        f"{OPENROUTER_BASE}/embeddings",
-        json=payload,
-        headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-    )
+    resp = None
+    for attempt in range(EMBEDDING_MAX_RETRIES + 1):
+        try:
+            resp = await http_client.post(
+                f"{OPENROUTER_BASE}/embeddings",
+                json=payload,
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            )
+        except httpx.RequestError as exc:
+            if attempt == EMBEDDING_MAX_RETRIES:
+                raise HTTPException(502, f"Embedding API network error: {exc}") from exc
+            await asyncio.sleep(min(2.0 * (2**attempt), 8.0))
+            continue
+        if (
+            resp.status_code not in {429, 500, 502, 503, 504}
+            or attempt == EMBEDDING_MAX_RETRIES
+        ):
+            break
+        retry_after = resp.headers.get("Retry-After")
+        delay = min(float(retry_after), 8.0) if retry_after else min(2.0 * (2**attempt), 8.0)
+        await asyncio.sleep(delay)
+    assert resp is not None
     body = resp.json()
     if resp.status_code != 200:
         logger.error("embed_query: HTTP %d — %s", resp.status_code, resp.text[:500])
@@ -1059,6 +1083,77 @@ async def _llm_rerank_legislation(query: str, candidates: list[dict]) -> list[di
         return []
 
 
+async def _resolve_legislation_intent(query: str) -> list[dict[str, str]]:
+    """Resolve a natural-language legal issue to likely Portuguese provisions."""
+    if not http_client or not OPENROUTER_API_KEY:
+        return []
+    schema = {
+        "name": "portuguese_legislation_references",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "citations": {
+                    "type": "array",
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "law": {"type": "string"},
+                            "article": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["law", "article", "reason"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["citations"],
+            "additionalProperties": False,
+        },
+    }
+    prompt = (
+        "Identifique as disposições de legislação portuguesa diretamente aplicáveis "
+        "à questão. Use a lei ou código canónico e o número exato do artigo. "
+        "Devolva no máximo três artigos, apenas quando tiver confiança elevada. "
+        "Não devolva doutrina nem jurisprudência.\n\nQuestão: " + query
+    )
+    try:
+        response = await http_client.post(
+            f"{OPENROUTER_BASE}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/pt-caselaw-dgsi",
+                "X-Title": "pt-caselaw-dgsi",
+            },
+            json={
+                "model": LEGISLATION_RESOLVER_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "response_format": {"type": "json_schema", "json_schema": schema},
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        parsed = _json.loads(content)
+        resolved = []
+        for citation in parsed.get("citations") or []:
+            law = _canonicalize_law(citation["law"])
+            article = _normalize_article_prefix(citation["article"])
+            if law and article:
+                resolved.append({
+                    "law": law,
+                    "article": article,
+                    "reason": citation["reason"],
+                })
+        return resolved
+    except Exception as exc:
+        logger.warning("legislation intent resolution failed: %s", exc)
+        return []
+
+
 def _row_to_dict(row: asyncpg.Record) -> dict:
     """Convert an asyncpg Record into a JSON-serialisable dict for SearchResult."""
     d = dict(row)
@@ -1215,6 +1310,165 @@ def _rrf_merge_multi(per_source: dict[str, list[tuple[str, float]]],
     return sorted(scores.items(), key=lambda x: x[1], reverse=True), ranks
 
 
+def _rerank_document_text(doc: dict[str, Any]) -> str:
+    """Build a compact Portuguese caselaw representation for reranking."""
+    metadata = doc.get("metadata") or {}
+    descriptors = metadata.get("legal_descriptors") or []
+    citations = metadata.get("legislation_cited") or []
+    citation_text = ", ".join(
+        " ".join(
+            str(value)
+            for value in (
+                citation.get("law"),
+                citation.get("article"),
+                citation.get("citation_context"),
+            )
+            if value
+        )
+        for citation in citations
+        if isinstance(citation, dict)
+    )
+    fields = [
+        f"Tribunal: {doc.get('court_short') or ''}",
+        f"Data: {doc.get('decision_date') or ''}",
+        f"Domínio jurídico: {doc.get('legal_domain') or ''}",
+        f"Resumo: {doc.get('summary') or ''}",
+        f"Questão jurídica: {metadata.get('legal_question') or ''}",
+        f"Decisão: {metadata.get('decision_outcome') or ''}",
+        f"Fundamentação determinante: {metadata.get('ratio_decidendi') or ''}",
+        f"Descritores: {', '.join(str(value) for value in descriptors)}",
+        f"Legislação citada: {citation_text}",
+    ]
+    return "\n".join(fields)[:12000]
+
+
+async def _rerank_candidates(
+    semantic_query: Optional[str],
+    keyword_query: Optional[str],
+    merged: list[tuple[str, float]],
+    docs: dict[str, dict],
+    rrf_k: int,
+    rerank_weight: Optional[float] = None,
+    lexical_promotion_ids: Optional[set[str]] = None,
+) -> list[tuple[str, float]]:
+    """Add a dedicated reranker rank to the existing RRF score.
+
+    Failures leave the original order untouched. The API contract remains the
+    same: ``hybrid_score`` is still a fused rank score and source diagnostics
+    continue to describe the four retrieval sources.
+    """
+    effective_weight = RERANK_WEIGHT if rerank_weight is None else rerank_weight
+    if (
+        effective_weight <= 0
+        or not RERANK_MODEL
+        or not OPENROUTER_API_KEY
+        or not http_client
+        or len(merged) < 2
+    ):
+        return merged
+
+    candidate_ids = [doc_id for doc_id, _ in merged if doc_id in docs]
+    if len(candidate_ids) < 2:
+        return merged
+    documents = [_rerank_document_text(docs[doc_id]) for doc_id in candidate_ids]
+    query_parts = [
+        "Ordene acórdãos portugueses pela relevância para a consulta. "
+        "Dê prioridade aos acórdãos que decidam diretamente a questão e aos "
+        "factos específicos pedidos, não apenas aos que partilhem vocabulário.",
+    ]
+    if semantic_query:
+        query_parts.append(f"Consulta: {semantic_query}")
+    if keyword_query:
+        query_parts.append(f"Termos jurídicos essenciais: {keyword_query}")
+
+    try:
+        response = None
+        for attempt in range(3):
+            response = await http_client.post(
+                f"{OPENROUTER_BASE}/rerank",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/pt-caselaw-dgsi",
+                    "X-Title": "pt-caselaw-dgsi",
+                },
+                json={
+                    "model": RERANK_MODEL,
+                    "query": "\n".join(query_parts),
+                    "documents": documents,
+                    "top_n": len(documents),
+                },
+                timeout=RERANK_TIMEOUT,
+            )
+            status = response.status_code
+            if status not in {429, 500, 502, 503, 504} or attempt == 2:
+                break
+            retry_after = response.headers.get("Retry-After")
+            delay = min(float(retry_after), 2.0) if retry_after else 0.25 * (2**attempt)
+            await asyncio.sleep(delay)
+        assert response is not None
+        response.raise_for_status()
+        results = response.json().get("results") or []
+        rerank_positions = {
+            candidate_ids[item["index"]]: position
+            for position, item in enumerate(results, start=1)
+            if isinstance(item.get("index"), int)
+            and 0 <= item["index"] < len(candidate_ids)
+        }
+        if len(rerank_positions) != len(candidate_ids):
+            logger.warning(
+                "rerank returned %d/%d candidates; preserving original order",
+                len(rerank_positions), len(candidate_ids),
+            )
+            return merged
+        rescored = [
+            (doc_id, score + effective_weight / (rrf_k + rerank_positions[doc_id]))
+            for doc_id, score in merged
+            if doc_id in rerank_positions
+        ]
+        if lexical_promotion_ids is not None and len(merged) > 5:
+            original_top_ids = {doc_id for doc_id, _ in merged[:5]}
+            top_floor = min(
+                score for doc_id, score in rescored if doc_id in original_top_ids
+            )
+            rescored = [
+                (
+                    doc_id,
+                    min(score, top_floor - 1e-9)
+                    if doc_id not in original_top_ids
+                    and doc_id not in lexical_promotion_ids
+                    else score,
+                )
+                for doc_id, score in rescored
+            ]
+        return sorted(rescored, key=lambda item: (-item[1], item[0]))
+    except Exception as exc:
+        logger.warning("rerank failed; preserving retrieval order: %s", exc)
+        return merged
+
+
+async def _rerank_legislation_rows(
+    query: str,
+    rows: list[asyncpg.Record],
+) -> list[dict[str, Any]]:
+    """Rerank date-ordered legislation matches by substantive relevance."""
+    docs = [_row_to_dict(row) for row in rows]
+    docs_by_id = {doc["doc_id"]: doc for doc in docs}
+    date_ranking = [
+        (doc["doc_id"], 1 / (50 + rank))
+        for rank, doc in enumerate(docs, start=1)
+    ]
+    reranked = await _rerank_candidates(
+        query,
+        None,
+        date_ranking,
+        docs_by_id,
+        50,
+        rerank_weight=LEGISLATION_RERANK_WEIGHT,
+    )
+    return [docs_by_id[doc_id] for doc_id, _ in reranked]
+
+
 @app.get(
     "/",
     tags=["health"],
@@ -1356,8 +1610,9 @@ def _build_results(
         "4. `fts` — Postgres full-text search (Portuguese + unaccent).\n\n"
         "The query string is embedded **once** (single call to the embedding "
         "provider) and the resulting vector is reused across the 3 HNSW "
-        "lookups. Per-source ranks are then combined with weighted "
-        "**Reciprocal Rank Fusion**:\n\n"
+        "lookups. Per-source ranks are combined with weighted "
+        "**Reciprocal Rank Fusion**, then the leading candidates are reranked "
+        "by a Portuguese-capable legal-text reranker:\n\n"
         "```\nhybrid_score(d) = Σ_source  weight[source] / (rrf_k + rank_source(d))\n```\n\n"
         "**Best practices:**\n\n"
         "- Supply **both** `q_semantic` and `q_keywords` for maximum recall. "
@@ -1420,7 +1675,16 @@ async def search_hybrid(
             weights["fts"] = req.weights.fts
 
         merged, ranks = _rrf_merge_multi(per_source, weights, k=req.rrf_k)
-        docs = await _fetch_docs([d for d, _ in merged[:req.limit]])
+        rerank_count = min(len(merged), max(req.limit, RERANK_CANDIDATES))
+        docs = await _fetch_docs([d for d, _ in merged[:rerank_count]])
+        merged = await _rerank_candidates(
+            sem_q,
+            kw_q,
+            merged[:rerank_count],
+            docs,
+            req.rrf_k,
+            lexical_promotion_ids={doc_id for doc_id, _ in fts_hits},
+        )
     except asyncio.TimeoutError as exc:
         raise HTTPException(
             504,
@@ -1653,7 +1917,7 @@ def _normalize_article_prefix(art_str: str) -> Optional[str]:
         return None
     # Ensure leading article number has .º (e.g. '394' → '394.º', '394.º' unchanged).
     # Check first whether .º is already present; if not, add it after the whole digit run.
-    if not re.match(r"^\d+(?:-[A-Za-z])?\.º", s):
+    if not re.match(r"^\d+\.º(?:-[A-Za-z])?", s):
         s = re.sub(r"^(\d+(?:-[A-Za-z])?)", r"\1.º", s)
     # Normalise 'N.º M' → ', n.º M' (space-separated after .º)
     s = re.sub(r"(?<=\.º)\s+n\.º\s+", ", n.º ", s)
@@ -1847,9 +2111,9 @@ def _citation_ref_select(
     idx = start_idx + 1
     if article_prefix:
         clauses.append("c.article <> ''")
-        clauses.append(f"c.article LIKE ${idx}")
-        params.append(article_prefix + "%")
-        idx += 1
+        clauses.append(f"(c.article = ${idx} OR c.article LIKE ${idx + 1})")
+        params.extend([article_prefix, article_prefix + ",%"])
+        idx += 2
     filt_sql, filt_params, idx = _build_citation_filters(filters, idx, alias="c")
     if filt_sql:
         clauses.append(filt_sql)
@@ -2124,7 +2388,7 @@ class LegislationSearchResponse(BaseModel):
     match: str = Field(description="Match mode used: `any` or `all`.")
     filters: Optional[Filters] = Field(None, description="Filters as received.")
     results: list[SearchResult] = Field(
-        description="Matching documents ordered by decision_date descending.",
+        description="Matching documents ordered by substantive relevance.",
     )
 
 
@@ -2261,7 +2525,7 @@ LEGISLATION_EXAMPLES: dict[str, dict[str, Any]] = {
         "**`match` mode:**\n\n"
         "* `any` (default) — return documents citing at least one listed article.\n"
         "* `all` — return only documents that cite every listed article.\n\n"
-        "Results are ordered by `decision_date` descending. "
+        "The newest matching candidates are reranked by substantive relevance. "
         "Use `offset` + `limit` for pagination.\n\n"
         "**Best practices:**\n\n"
         "- Article numbers are prefix-matched — `342` and `342.º` both work.\n"
@@ -2339,9 +2603,10 @@ async def search_legislation(
 
     effective_filters = req.resolved_filters()
     refs = [(ref.law, ref.article) for ref in normalized]
+    candidate_limit = max(req.limit, RERANK_CANDIDATES) if req.offset == 0 else req.limit
     try:
         rows = await _fetch_legislation_documents(
-            refs, req.match, effective_filters, req.limit, req.offset, timeout=50
+            refs, req.match, effective_filters, candidate_limit, req.offset, timeout=50
         )
     except asyncio.TimeoutError as exc:
         raise HTTPException(
@@ -2350,7 +2615,11 @@ async def search_legislation(
             "try adding filters (courts, date range) or narrowing the article.",
         ) from exc
 
-    results = [SearchResult(**_row_to_dict(r)) for r in rows]
+    query = "Aplicação direta em jurisprudência de " + (
+        " e " if req.match == "all" else " ou "
+    ).join(f"{law} {article or ''}".strip() for law, article in refs)
+    ranked_docs = await _rerank_legislation_rows(query, rows)
+    results = [SearchResult(**doc) for doc in ranked_docs[:req.limit]]
 
     return LegislationSearchResponse(
         count=len(results),
@@ -2370,13 +2639,12 @@ async def search_legislation(
     description=(
         "Return decisions that cite legislation semantically similar to the query.\n\n"
         "**Pipeline:**\n\n"
-        "1. The query is embedded (google/gemini-embedding-001, 1024 dims).\n"
-        "2. Top-K candidates are retrieved from `legislation_embeddings` via HNSW "
-        "vector search (cosine similarity).\n"
-        "3. An LLM reranks the candidates, selecting the genuinely relevant "
-        "`(law, article)` pairs and discarding false positives.\n"
-        "4. Documents citing the selected legislation are fetched via a fast "
-        "GIN exact-match query (`metadata @> '{\"legislation_cited\": [...]}'`).\n\n"
+        "1. The query is resolved to likely Portuguese provisions using constrained "
+        "structured output.\n"
+        "2. Citation embeddings provide additional candidate references.\n"
+        "3. Documents citing the selected `(law, article)` pairs are fetched through "
+        "the normalized citation index.\n"
+        "4. Matching decisions are reranked by substantive relevance to the query.\n\n"
         "**Best practices:**\n\n"
         "- Write `q` as natural Portuguese — abbreviations, full names, and mixed "
         "formats all work (e.g. `codigo civil artigo 342`, `CT art. 394`, "
@@ -2436,8 +2704,32 @@ async def search_legislation_semantic(
         for i, r in enumerate(leg_rows)
     ]
 
-    # 3. LLM reranking
-    selected = await _llm_rerank_legislation(req.q, candidates)
+    # 3. Resolve the legal intent directly. Citation-only embeddings cannot
+    # reliably infer an article from a conceptual description.
+    resolved = await _resolve_legislation_intent(req.q)
+    selected = []
+    for ref in resolved:
+        idx = next(
+            (
+                i for i, candidate in enumerate(candidates)
+                if candidate["law"] == ref["law"]
+                and candidate["article"] == ref["article"]
+            ),
+            None,
+        )
+        if idx is None:
+            idx = len(candidates)
+            candidates.append({
+                "idx": idx,
+                "law": ref["law"],
+                "article": ref["article"],
+                "citation_text": f"{ref['law']} art. {ref['article']}",
+                "doc_count": 0,
+                "sim": 0.0,
+            })
+        selected.append({"idx": idx, "reason": ref["reason"]})
+    if not selected:
+        selected = await _llm_rerank_legislation(req.q, candidates)
     selected_indices = {s["idx"] for s in selected}
 
     candidate_models = [
@@ -2453,21 +2745,25 @@ async def search_legislation_semantic(
         for i, c in enumerate(candidates)
     ]
 
-    # If LLM rejected all candidates, fall back to top-1 as a safety net
     if not selected_indices:
-        selected_indices = {0}
-        candidate_models[0].selected = True
-        candidate_models[0].reason = "Fallback: top similarity match"
+        return LegislationSemanticSearchResponse(
+            count=0,
+            offset=req.offset,
+            query=req.q,
+            candidates=candidate_models,
+            results=[],
+        )
 
     # 4. Fetch documents through the normalized citation lookup table.
     effective_filters = req.resolved_filters()
     selected_refs = [
-        (leg_rows[idx]["law"], leg_rows[idx]["article"])
+        (candidates[idx]["law"], candidates[idx]["article"])
         for idx in sorted(selected_indices)
     ]
+    candidate_limit = max(req.limit, RERANK_CANDIDATES) if req.offset == 0 else req.limit
     try:
         rows = await _fetch_legislation_documents(
-            selected_refs, "any", effective_filters, req.limit, req.offset, timeout=50
+            selected_refs, "any", effective_filters, candidate_limit, req.offset, timeout=50
         )
     except asyncio.TimeoutError as exc:
         raise HTTPException(
@@ -2476,7 +2772,8 @@ async def search_legislation_semantic(
             "try adding filters (courts, date range) or narrowing the query.",
         ) from exc
 
-    results = [SearchResult(**_row_to_dict(r)) for r in rows]
+    ranked_docs = await _rerank_legislation_rows(req.q, rows)
+    results = [SearchResult(**doc) for doc in ranked_docs[:req.limit]]
 
     return LegislationSemanticSearchResponse(
         count=len(results),
