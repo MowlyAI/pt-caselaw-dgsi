@@ -58,7 +58,9 @@ RERANK_WEIGHT = float(os.getenv("RERANK_WEIGHT", "20.0"))
 RERANK_LEXICAL_GUARD = False
 RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "30"))
 LEGISLATION_RERANK_WEIGHT = float(os.getenv("LEGISLATION_RERANK_WEIGHT", "4.0"))
-LEGISLATION_RESOLVER_MODEL = "google/gemini-3.1-pro-preview"
+# gemini-3.1-pro-preview gave identical results on the semantic legislation
+# benchmark cases but took ~16s p50 vs ~3.3s (2026-10).
+LEGISLATION_RESOLVER_MODEL = "google/gemini-3.1-flash-lite"
 
 DB_HOST = os.getenv("SUPABASE_DB_HOST", "")
 DB_PORT = int(os.getenv("SUPABASE_DB_PORT", "5432"))
