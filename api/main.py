@@ -496,6 +496,27 @@ class SearchWeights(BaseModel):
     )
 
 
+class SemanticFieldQueries(BaseModel):
+    """Optional per-column texts for vector search.
+
+    Each stored vector is built from different LLM-written fields of a
+    decision (`embedding`: the one-sentence case description;
+    `embedding_context`: that sentence + legal question + summary;
+    `embedding_ratio`: ratio decidendi + outcome). Callers that write the same
+    fields for the query can match them column to column. Columns left empty
+    fall back to `q_semantic`.
+    """
+    embedding: Optional[str] = Field(
+        None, description="Text embedded for the `embedding` column."
+    )
+    embedding_context: Optional[str] = Field(
+        None, description="Text embedded for the `embedding_context` column."
+    )
+    embedding_ratio: Optional[str] = Field(
+        None, description="Text embedded for the `embedding_ratio` column."
+    )
+
+
 class SearchRequest(BaseModel):
     """Request body for `POST /search` (hybrid search).
 
@@ -527,6 +548,24 @@ class SearchRequest(BaseModel):
             "`-excluded`, `OR`."
         ),
         examples=[["despedimento", "email", "corporativo"]],
+    )
+    q_semantic_fields: Optional[SemanticFieldQueries] = Field(
+        None,
+        description=(
+            "Optional per-column texts for vector search, written like the "
+            "stored fields of a decision. Each enabled vector column embeds "
+            "its own text, falling back to `q_semantic`. The reranker still "
+            "ranks against `q_semantic`, so keep the user's question there."
+        ),
+    )
+    rerank_mode: Literal["blend", "question"] = Field(
+        "blend",
+        description=(
+            "`blend` (default) adds the reranker's rank to the fused score and "
+            "gives it the keywords too. `question` reranks against `q_semantic` "
+            "alone and returns the reranker's order, which ranked relevant "
+            "decisions higher for long natural-language requests."
+        ),
     )
     limit: int = Field(
         20, ge=1, le=100,
@@ -643,6 +682,36 @@ HYBRID_EXAMPLES: dict[str, dict[str, Any]] = {
         "value": {
             "q_semantic": "responsabilidade civil extracontratual do Estado",
             "q_keywords": ["responsabilidade", "civil", "Estado"],
+            "limit": 10,
+        },
+    },
+    "hybrid_field_matched": {
+        "summary": "Hybrid search matched field to field",
+        "description":
+            "Keep the user's question in `q_semantic` (the reranker reads it), "
+            "write per-column texts in the style of the stored fields, and "
+            "pass keyword phrases joined with `OR` for FTS.",
+        "value": {
+            "q_semantic":
+                "O Estado responde pelos danos causados pela demora excessiva "
+                "de um processo judicial?",
+            "q_semantic_fields": {
+                "embedding":
+                    "Ação de indemnização contra o Estado por atraso na decisão "
+                    "de processo judicial, discutindo a violação do direito a "
+                    "decisão em prazo razoável.",
+                "embedding_context":
+                    "Ação de indemnização contra o Estado por atraso na decisão "
+                    "de processo judicial.\n\nO atraso na decisão constitui "
+                    "funcionamento anormal da justiça que obriga o Estado a indemnizar?",
+                "embedding_ratio":
+                    "O Estado responde civilmente pelos danos decorrentes da "
+                    "violação do direito a uma decisão em prazo razoável.",
+            },
+            "q_keywords": [
+                '"responsabilidade civil do estado" OR "atraso na justica" '
+                'OR "prazo razoavel"'
+            ],
             "limit": 10,
         },
     },
@@ -1229,6 +1298,23 @@ async def _search_vectors(q: str, fields: list[str], limit: int,
     return dict(zip(fields, results))
 
 
+async def _search_vectors_by_text(field_texts: dict[str, str], limit: int,
+                                  filters: Optional[Filters]
+                                  ) -> dict[str, list[tuple[str, float]]]:
+    """Run each vector column against its own query text, embedding every
+    distinct text once. Returns {field: [(doc_id, similarity), ...]}."""
+    texts = list(dict.fromkeys(field_texts.values()))
+    per_text = await asyncio.gather(*(
+        _search_vectors(text, [f for f, t in field_texts.items() if t == text],
+                        limit, filters)
+        for text in texts
+    ))
+    merged: dict[str, list[tuple[str, float]]] = {}
+    for hits in per_text:
+        merged.update(hits)
+    return {f: merged[f] for f in field_texts if f in merged}
+
+
 # ---------------------------------------------------------------------------
 # Query expansion
 # ---------------------------------------------------------------------------
@@ -1430,6 +1516,12 @@ def _rrf_merge_multi(per_source: dict[str, list[tuple[str, float]]],
     return sorted(scores.items(), key=lambda x: x[1], reverse=True), ranks
 
 
+def _plain_keywords(keyword_query: str) -> str:
+    """Drop websearch syntax (quotes, OR) so the reranker reads plain terms."""
+    text = re.sub(r"\s+OR\s+", ", ", keyword_query).replace('"', "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _rerank_document_text(doc: dict[str, Any]) -> str:
     """Build a compact Portuguese caselaw representation for reranking."""
     metadata = doc.get("metadata") or {}
@@ -1470,14 +1562,19 @@ async def _rerank_candidates(
     rrf_k: int,
     rerank_weight: Optional[float] = None,
     lexical_promotion_ids: Optional[set[str]] = None,
+    question_only: bool = False,
 ) -> list[tuple[str, float]]:
     """Add a dedicated reranker rank to the existing RRF score.
+
+    With ``question_only`` the reranker reads only the semantic query and its
+    order replaces the fused order.
 
     Failures leave the original order untouched. The API contract remains the
     same: ``hybrid_score`` is still a fused rank score and source diagnostics
     continue to describe the four retrieval sources.
     """
     effective_weight = RERANK_WEIGHT if rerank_weight is None else rerank_weight
+    question_only = question_only and bool(semantic_query)
     if (
         effective_weight <= 0
         or not RERANK_MODEL
@@ -1491,15 +1588,15 @@ async def _rerank_candidates(
     if len(candidate_ids) < 2:
         return merged
     documents = [_rerank_document_text(docs[doc_id]) for doc_id in candidate_ids]
-    query_parts = [
+    query_parts = [] if question_only else [
         "Ordene acórdãos portugueses pela relevância para a consulta. "
         "Dê prioridade aos acórdãos que decidam diretamente a questão e aos "
         "factos específicos pedidos, não apenas aos que partilhem vocabulário.",
     ]
     if semantic_query:
         query_parts.append(f"Consulta: {semantic_query}")
-    if keyword_query:
-        query_parts.append(f"Termos jurídicos essenciais: {keyword_query}")
+    if keyword_query and not question_only:
+        query_parts.append(f"Termos jurídicos essenciais: {_plain_keywords(keyword_query)}")
 
     try:
         response = None
@@ -1542,7 +1639,8 @@ async def _rerank_candidates(
             )
             return merged
         rescored = [
-            (doc_id, score + effective_weight / (rrf_k + rerank_positions[doc_id]))
+            (doc_id, (0.0 if question_only else score)
+             + effective_weight / (rrf_k + rerank_positions[doc_id]))
             for doc_id, score in merged
             if doc_id in rerank_positions
         ]
@@ -1688,6 +1786,18 @@ def _enabled_vector_fields(weights: SearchWeights) -> list[str]:
     return [f for f in EMBEDDING_FIELDS if getattr(weights, f) > 0]
 
 
+def _vector_field_texts(req: SearchRequest, vec_fields: list[str]) -> dict[str, str]:
+    """Text to embed per enabled vector column: its own text from
+    `q_semantic_fields`, else `q_semantic`. Columns with neither are omitted."""
+    own = req.q_semantic_fields
+    out: dict[str, str] = {}
+    for field in vec_fields:
+        text = ((getattr(own, field) or "") if own else "").strip() or (req.q_semantic or "")
+        if text:
+            out[field] = text
+    return out
+
+
 def _build_results(
     merged: list[tuple[str, float]],
     docs: dict[str, dict],
@@ -1770,21 +1880,27 @@ async def search_hybrid(
     use_fts = req.weights.fts > 0
     if not vec_fields and not use_fts:
         raise HTTPException(400, "All weights are 0; nothing to search")
-    sem_q, kw_q = _resolve_queries(req, need_sem=bool(vec_fields), need_fts=use_fts)
+    field_texts = _vector_field_texts(req, vec_fields)
+    sem_q, kw_q = _resolve_queries(
+        req, need_sem=len(field_texts) < len(vec_fields), need_fts=use_fts
+    )
+    # Reranking and expansion read the caller's question; without q_semantic
+    # fall back to the first per-column text.
+    rank_q = sem_q or next(iter(field_texts.values()), None)
     over = req.limit * req.overfetch
     effective_filters = req.resolved_filters()
 
     try:
         # Query expansion runs concurrently with the original-query searches.
-        expansion_task = asyncio.create_task(_expand_query(sem_q, kw_q))
+        expansion_task = asyncio.create_task(_expand_query(rank_q, kw_q))
         try:
             if vec_fields and use_fts:
                 per_vec, fts_hits = await asyncio.gather(
-                    _search_vectors(sem_q, vec_fields, over, effective_filters),
+                    _search_vectors_by_text(field_texts, over, effective_filters),
                     _search_fts(kw_q, over, effective_filters),
                 )
             elif vec_fields:
-                per_vec = await _search_vectors(sem_q, vec_fields, over, effective_filters)
+                per_vec = await _search_vectors_by_text(field_texts, over, effective_filters)
                 fts_hits = []
             else:
                 per_vec = {}
@@ -1819,12 +1935,13 @@ async def search_hybrid(
         rerank_count = min(len(merged), max(req.limit, RERANK_CANDIDATES))
         docs = await _fetch_docs([d for d, _ in merged[:rerank_count]])
         merged = await _rerank_candidates(
-            sem_q,
+            rank_q,
             kw_q,
             merged[:rerank_count],
             docs,
             req.rrf_k,
             lexical_promotion_ids={doc_id for doc_id, _ in fts_hits},
+            question_only=req.rerank_mode == "question",
         )
     except asyncio.TimeoutError as exc:
         raise HTTPException(
