@@ -2,7 +2,7 @@
 
     scrape → extract → embed+upload → legislation citations → legislation
     embeddings → citation doc_counts → canonical legal areas → duplicate
-    marking → fts_core gap check
+    marking → fts_core gap check → disability points
 
 Every step only processes what is new, so this is safe to re-run. Pass
 --from-step to resume after a failure (keep the same --since so the
@@ -38,6 +38,7 @@ def _steps(since: str) -> list[tuple[str, list[str]]]:
         ("legal-areas", [PY, "scripts/canonicalize_legal_domains.py"]),
         ("duplicates", [PY, "scripts/mark_duplicates.py", "--updated-since", since]),
         ("fts-core", [PY, "scripts/backfill_fts_core.py"]),
+        ("disability-points", [PY, "scripts/backfill_disability_points.py", "--updated-since", since]),
     ]
 
 
