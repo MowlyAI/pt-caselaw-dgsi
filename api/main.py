@@ -558,6 +558,15 @@ class SearchRequest(BaseModel):
             "ranks against `q_semantic`, so keep the user's question there."
         ),
     )
+    rerank_mode: Literal["blend", "question"] = Field(
+        "blend",
+        description=(
+            "`blend` (default) adds the reranker's rank to the fused score and "
+            "gives it the keywords too. `question` reranks against `q_semantic` "
+            "alone and returns the reranker's order, which ranked relevant "
+            "decisions higher for long natural-language requests."
+        ),
+    )
     limit: int = Field(
         20, ge=1, le=100,
         description="Maximum number of results to return (1–100).",
@@ -1553,14 +1562,19 @@ async def _rerank_candidates(
     rrf_k: int,
     rerank_weight: Optional[float] = None,
     lexical_promotion_ids: Optional[set[str]] = None,
+    question_only: bool = False,
 ) -> list[tuple[str, float]]:
     """Add a dedicated reranker rank to the existing RRF score.
+
+    With ``question_only`` the reranker reads only the semantic query and its
+    order replaces the fused order.
 
     Failures leave the original order untouched. The API contract remains the
     same: ``hybrid_score`` is still a fused rank score and source diagnostics
     continue to describe the four retrieval sources.
     """
     effective_weight = RERANK_WEIGHT if rerank_weight is None else rerank_weight
+    question_only = question_only and bool(semantic_query)
     if (
         effective_weight <= 0
         or not RERANK_MODEL
@@ -1574,14 +1588,14 @@ async def _rerank_candidates(
     if len(candidate_ids) < 2:
         return merged
     documents = [_rerank_document_text(docs[doc_id]) for doc_id in candidate_ids]
-    query_parts = [
+    query_parts = [] if question_only else [
         "Ordene acórdãos portugueses pela relevância para a consulta. "
         "Dê prioridade aos acórdãos que decidam diretamente a questão e aos "
         "factos específicos pedidos, não apenas aos que partilhem vocabulário.",
     ]
     if semantic_query:
         query_parts.append(f"Consulta: {semantic_query}")
-    if keyword_query:
+    if keyword_query and not question_only:
         query_parts.append(f"Termos jurídicos essenciais: {_plain_keywords(keyword_query)}")
 
     try:
@@ -1625,7 +1639,8 @@ async def _rerank_candidates(
             )
             return merged
         rescored = [
-            (doc_id, score + effective_weight / (rrf_k + rerank_positions[doc_id]))
+            (doc_id, (0.0 if question_only else score)
+             + effective_weight / (rrf_k + rerank_positions[doc_id]))
             for doc_id, score in merged
             if doc_id in rerank_positions
         ]
@@ -1926,6 +1941,7 @@ async def search_hybrid(
             docs,
             req.rrf_k,
             lexical_promotion_ids={doc_id for doc_id, _ in fts_hits},
+            question_only=req.rerank_mode == "question",
         )
     except asyncio.TimeoutError as exc:
         raise HTTPException(
