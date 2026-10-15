@@ -454,6 +454,29 @@ class Filters(BaseModel):
         ),
         examples=[["high", "medium"]],
     )
+    disability_points_gt: Optional[float] = Field(
+        None, ge=0, le=100,
+        description=(
+            "Keep decisions whose highest permanent disability degree "
+            "(défice funcional permanente points or IPP %, 0–100, parsed from "
+            "the extracted injuries) is strictly greater than this value. "
+            "Decisions with no stated degree are excluded."
+        ),
+        examples=[15],
+    )
+    disability_points_gte: Optional[float] = Field(
+        None, ge=0, le=100,
+        description="Like `disability_points_gt`, inclusive.",
+    )
+    disability_points_lt: Optional[float] = Field(
+        None, ge=0, le=100,
+        description="Upper bound on the disability degree, exclusive.",
+    )
+    disability_points_lte: Optional[float] = Field(
+        None, ge=0, le=100,
+        description="Upper bound on the disability degree, inclusive.",
+        examples=[30],
+    )
 
     @field_validator("date_from", "date_to", mode="before")
     @classmethod
@@ -654,19 +677,13 @@ class SearchRequest(BaseModel):
         """Return the effective Filters, merging top-level shorthands over
         the nested `filters` object. Returns None when nothing is set."""
         base = self.filters or Filters()
-        merged = Filters(
-            court=self.courts if self.courts is not None else base.court,
-            date_from=self.from_date if self.from_date is not None else base.date_from,
-            date_to=self.to_date if self.to_date is not None else base.date_to,
-            is_auj=self.is_auj if self.is_auj is not None else base.is_auj,
-            legal_domain=base.legal_domain,
-            decision_type=base.decision_type,
-            extraction_confidence=base.extraction_confidence,
-        )
-        if all(v is None for v in [
-            merged.court, merged.date_from, merged.date_to, merged.is_auj,
-            merged.legal_domain, merged.decision_type, merged.extraction_confidence,
-        ]):
+        merged = base.model_copy(update={
+            "court": self.courts if self.courts is not None else base.court,
+            "date_from": self.from_date if self.from_date is not None else base.date_from,
+            "date_to": self.to_date if self.to_date is not None else base.date_to,
+            "is_auj": self.is_auj if self.is_auj is not None else base.is_auj,
+        })
+        if all(v is None for v in merged.model_dump().values()):
             return None
         return merged
 
@@ -952,7 +969,36 @@ def _build_filters(
         clauses.append(f"{prefix}metadata->>'extraction_confidence' = ANY(${idx}::text[])")
         params.append(f.extraction_confidence)
         idx += 1
+    clause, points_params, idx = _disability_points_clause(f, idx, prefix)
+    if clause:
+        clauses.append(clause)
+        params.extend(points_params)
     return " AND ".join(clauses), params
+
+
+def _disability_points_clause(
+    f: Filters, idx: int, prefix: str
+) -> tuple[str, list[Any], int]:
+    """`disability_points_*` bounds as a semi-join on document_disability_points
+    (migrations/20261015_document_disability_points.sql)."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    for op, value in (
+        (">", f.disability_points_gt), (">=", f.disability_points_gte),
+        ("<", f.disability_points_lt), ("<=", f.disability_points_lte),
+    ):
+        if value is not None:
+            conditions.append(f"points {op} ${idx}")
+            params.append(value)
+            idx += 1
+    if not conditions:
+        return "", [], idx
+    return (
+        f"{prefix}doc_id IN (SELECT doc_id FROM document_disability_points "
+        f"WHERE {' AND '.join(conditions)})",
+        params,
+        idx,
+    )
 
 
 async def embed_query(text: str) -> list[float]:
@@ -2353,6 +2399,10 @@ def _build_document_json_filters(
         clauses.append(f"{prefix}metadata->>'extraction_confidence' = ANY(${idx}::text[])")
         params.append(f.extraction_confidence)
         idx += 1
+    clause, points_params, idx = _disability_points_clause(f, idx, prefix)
+    if clause:
+        clauses.append(clause)
+        params.extend(points_params)
     return " AND ".join(clauses), params, idx
 
 
@@ -2619,19 +2669,13 @@ class LegislationSearchRequest(BaseModel):
 
     def resolved_filters(self) -> Optional[Filters]:
         base = self.filters or Filters()
-        merged = Filters(
-            court=self.courts if self.courts is not None else base.court,
-            date_from=self.from_date if self.from_date is not None else base.date_from,
-            date_to=self.to_date if self.to_date is not None else base.date_to,
-            is_auj=self.is_auj if self.is_auj is not None else base.is_auj,
-            legal_domain=base.legal_domain,
-            decision_type=base.decision_type,
-            extraction_confidence=base.extraction_confidence,
-        )
-        if all(v is None for v in [
-            merged.court, merged.date_from, merged.date_to, merged.is_auj,
-            merged.legal_domain, merged.decision_type, merged.extraction_confidence,
-        ]):
+        merged = base.model_copy(update={
+            "court": self.courts if self.courts is not None else base.court,
+            "date_from": self.from_date if self.from_date is not None else base.date_from,
+            "date_to": self.to_date if self.to_date is not None else base.date_to,
+            "is_auj": self.is_auj if self.is_auj is not None else base.is_auj,
+        })
+        if all(v is None for v in merged.model_dump().values()):
             return None
         return merged
 
@@ -2674,19 +2718,13 @@ class LegislationSemanticSearchRequest(BaseModel):
 
     def resolved_filters(self) -> Optional[Filters]:
         base = self.filters or Filters()
-        merged = Filters(
-            court=self.courts if self.courts is not None else base.court,
-            date_from=self.from_date if self.from_date is not None else base.date_from,
-            date_to=self.to_date if self.to_date is not None else base.date_to,
-            is_auj=self.is_auj if self.is_auj is not None else base.is_auj,
-            legal_domain=base.legal_domain,
-            decision_type=base.decision_type,
-            extraction_confidence=base.extraction_confidence,
-        )
-        if all(v is None for v in [
-            merged.court, merged.date_from, merged.date_to, merged.is_auj,
-            merged.legal_domain, merged.decision_type, merged.extraction_confidence,
-        ]):
+        merged = base.model_copy(update={
+            "court": self.courts if self.courts is not None else base.court,
+            "date_from": self.from_date if self.from_date is not None else base.date_from,
+            "date_to": self.to_date if self.to_date is not None else base.date_to,
+            "is_auj": self.is_auj if self.is_auj is not None else base.is_auj,
+        })
+        if all(v is None for v in merged.model_dump().values()):
             return None
         return merged
 
