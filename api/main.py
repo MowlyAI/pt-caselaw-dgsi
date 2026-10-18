@@ -2130,6 +2130,90 @@ async def get_document(
 
 
 # ---------------------------------------------------------------------------
+# Cited decision resolution
+# ---------------------------------------------------------------------------
+
+from api.citations import PROCESS_KEY_SQL, court_code, pick_candidate, process_key  # noqa: E402
+
+
+class CitedDecision(BaseModel):
+    """One entry of `metadata.jurisprudence_cited`, as the extractor writes it."""
+    process_number: Optional[str] = Field(None, max_length=200)
+    court_abbreviation: Optional[str] = Field(None, max_length=40)
+    court_name: Optional[str] = Field(None, max_length=200)
+    decision_date: Optional[str] = Field(None, max_length=20)
+
+
+class ResolveCitationsRequest(BaseModel):
+    citations: list[CitedDecision] = Field(..., max_length=50)
+
+
+class ResolvedCitation(BaseModel):
+    index: int = Field(description="Position of the citation in the request.")
+    doc_id: Optional[str] = Field(
+        None, description="Matching corpus document, or null when not in the corpus."
+    )
+    court_short: Optional[str] = None
+    process_number: Optional[str] = None
+    decision_date: Optional[date] = None
+    url: Optional[str] = None
+
+
+class ResolveCitationsResponse(BaseModel):
+    results: list[ResolvedCitation]
+
+
+@app.post(
+    "/documents/resolve-citations",
+    response_model=ResolveCitationsResponse,
+    tags=["documents"],
+    summary="Map cited decisions to corpus documents",
+    description=(
+        "Takes up to 50 entries of a document's `metadata.jurisprudence_cited` "
+        "and returns, for each one in order, the `doc_id` of the cited decision "
+        "when it is in the corpus (null otherwise). Matching is on the "
+        "process number with whitespace removed and case ignored; court and "
+        "date pick between documents sharing a number, and an ambiguous "
+        "match returns null rather than a guess. Duplicates are skipped."
+    ),
+)
+async def resolve_citations(req: ResolveCitationsRequest):
+    keys = [process_key(c.process_number) for c in req.citations]
+    wanted = sorted({k for k in keys if k})
+    by_key: dict[str, list[dict]] = {}
+    if wanted:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT doc_id, url, court_short, process_number, decision_date, "
+                f"{PROCESS_KEY_SQL} AS key FROM documents "
+                f"WHERE {PROCESS_KEY_SQL} = ANY($1::text[]) AND duplicate_of IS NULL",
+                wanted,
+            )
+        for r in rows:
+            by_key.setdefault(r["key"], []).append(dict(r))
+
+    results: list[ResolvedCitation] = []
+    for i, (cite, key) in enumerate(zip(req.citations, keys)):
+        match = pick_candidate(
+            by_key.get(key, []) if key else [],
+            court_code(cite.court_abbreviation, cite.court_name),
+            cite.decision_date,
+        )
+        if match:
+            results.append(ResolvedCitation(
+                index=i,
+                doc_id=match["doc_id"],
+                court_short=match["court_short"],
+                process_number=match["process_number"],
+                decision_date=match["decision_date"],
+                url=match["url"],
+            ))
+        else:
+            results.append(ResolvedCitation(index=i))
+    return ResolveCitationsResponse(results=results)
+
+
+# ---------------------------------------------------------------------------
 # Legislation article search
 # ---------------------------------------------------------------------------
 
