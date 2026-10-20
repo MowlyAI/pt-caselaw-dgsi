@@ -46,7 +46,18 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
 EMBEDDING_MAX_RETRIES = int(os.getenv("EMBEDDING_MAX_RETRIES", "4"))
 # Fast model for short legislation-query canonicalization/selection calls.
 LLM_MODEL = "google/gemini-3.1-flash-lite"
-RERANK_MODEL = "voyageai/rerank-2.5"
+# Tried in order. OpenRouter's /rerank has no `models` fallback list and Voyage
+# has a single provider there, so the fallback lives here (issue #8: Voyage
+# returned 429 for every request from 2026-10-10).
+RERANK_MODELS: tuple[str, ...] = ("voyageai/rerank-2.5", "cohere/rerank-v3.5")
+RERANK_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+RERANK_MAX_ATTEMPTS = 3  # per model
+RERANK_BACKOFF_BASE_SECONDS = 0.5  # 0.5s, 1s between attempts
+RERANK_MAX_RETRY_DELAY_SECONDS = 2.0
+# A model still answering 429 after its retries is skipped for this long (or
+# its Retry-After, up to the max) so requests go straight to the next model.
+RERANK_COOLDOWN_SECONDS = 60.0
+RERANK_MAX_COOLDOWN_SECONDS = 600.0
 # Reranker defaults chosen with scripts/evaluate_search_quality.py (2026-10):
 # letting Voyage decide the order (weight 20 vs RRF's ~1/(k+rank) per source)
 # over the top 150 fused candidates raised hybrid P@5 0.677 -> 0.746.
@@ -1600,6 +1611,98 @@ def _rerank_document_text(doc: dict[str, Any]) -> str:
     return "\n".join(fields)[:12000]
 
 
+_rerank_cooldown_until: dict[str, float] = {}
+
+
+def _retry_after_seconds(response: httpx.Response) -> Optional[float]:
+    try:
+        value = float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+async def _post_rerank(
+    query: str, documents: list[str]
+) -> Optional[tuple[str, list[dict[str, Any]]]]:
+    """Rerank with the first model in ``RERANK_MODELS`` that answers.
+
+    Retries 429/5xx and network errors with exponential backoff, then moves
+    to the next model. Returns ``(model, results)`` or ``None`` when every
+    model failed or is cooling down after a 429.
+    """
+    for model in RERANK_MODELS:
+        if _rerank_cooldown_until.get(model, 0.0) > time.monotonic():
+            logger.info("rerank: %s cooling down after 429; skipping", model)
+            continue
+        response: Optional[httpx.Response] = None
+        for attempt in range(RERANK_MAX_ATTEMPTS):
+            last_attempt = attempt == RERANK_MAX_ATTEMPTS - 1
+            delay = min(
+                RERANK_BACKOFF_BASE_SECONDS * (2**attempt),
+                RERANK_MAX_RETRY_DELAY_SECONDS,
+            )
+            try:
+                response = await http_client.post(
+                    f"{OPENROUTER_BASE}/rerank",
+                    headers={
+                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/pt-caselaw-dgsi",
+                        "X-Title": "pt-caselaw-dgsi",
+                    },
+                    json={
+                        "model": model,
+                        "query": query,
+                        "documents": documents,
+                        "top_n": len(documents),
+                    },
+                    timeout=RERANK_TIMEOUT,
+                )
+            except httpx.RequestError as exc:
+                response = None
+                if last_attempt:
+                    logger.warning("rerank: %s network error: %s", model, exc)
+                    break
+                await asyncio.sleep(delay)
+                continue
+            if response.status_code not in RERANK_RETRY_STATUSES or last_attempt:
+                break
+            retry_after = _retry_after_seconds(response)
+            if retry_after is not None:
+                delay = min(retry_after, RERANK_MAX_RETRY_DELAY_SECONDS)
+            await asyncio.sleep(delay)
+
+        if response is None:
+            continue
+        if response.status_code == 200:
+            try:
+                results = response.json().get("results")
+            except ValueError:
+                results = None
+            if isinstance(results, list):
+                if model != RERANK_MODELS[0]:
+                    logger.info("rerank: served by fallback model %s", model)
+                return model, results
+            logger.warning("rerank: %s returned no results list", model)
+            continue
+        if response.status_code == 429:
+            cooldown = min(
+                max(_retry_after_seconds(response) or 0.0, RERANK_COOLDOWN_SECONDS),
+                RERANK_MAX_COOLDOWN_SECONDS,
+            )
+            _rerank_cooldown_until[model] = time.monotonic() + cooldown
+            logger.warning(
+                "rerank: %s rate limited (429); skipping it for %.0fs", model, cooldown
+            )
+        else:
+            logger.warning(
+                "rerank: %s HTTP %d: %s",
+                model, response.status_code, response.text[:200],
+            )
+    return None
+
+
 async def _rerank_candidates(
     semantic_query: Optional[str],
     keyword_query: Optional[str],
@@ -1623,7 +1726,7 @@ async def _rerank_candidates(
     question_only = question_only and bool(semantic_query)
     if (
         effective_weight <= 0
-        or not RERANK_MODEL
+        or not RERANK_MODELS
         or not OPENROUTER_API_KEY
         or not http_client
         or len(merged) < 2
@@ -1645,33 +1748,10 @@ async def _rerank_candidates(
         query_parts.append(f"Termos jurídicos essenciais: {_plain_keywords(keyword_query)}")
 
     try:
-        response = None
-        for attempt in range(3):
-            response = await http_client.post(
-                f"{OPENROUTER_BASE}/rerank",
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/pt-caselaw-dgsi",
-                    "X-Title": "pt-caselaw-dgsi",
-                },
-                json={
-                    "model": RERANK_MODEL,
-                    "query": "\n".join(query_parts),
-                    "documents": documents,
-                    "top_n": len(documents),
-                },
-                timeout=RERANK_TIMEOUT,
-            )
-            status = response.status_code
-            if status not in {429, 500, 502, 503, 504} or attempt == 2:
-                break
-            retry_after = response.headers.get("Retry-After")
-            delay = min(float(retry_after), 2.0) if retry_after else 0.25 * (2**attempt)
-            await asyncio.sleep(delay)
-        assert response is not None
-        response.raise_for_status()
-        results = response.json().get("results") or []
+        reranked_by = await _post_rerank("\n".join(query_parts), documents)
+        if reranked_by is None:
+            return merged
+        model, results = reranked_by
         rerank_positions = {
             candidate_ids[item["index"]]: position
             for position, item in enumerate(results, start=1)
@@ -1680,8 +1760,8 @@ async def _rerank_candidates(
         }
         if len(rerank_positions) != len(candidate_ids):
             logger.warning(
-                "rerank returned %d/%d candidates; preserving original order",
-                len(rerank_positions), len(candidate_ids),
+                "rerank (%s) returned %d/%d candidates; preserving original order",
+                model, len(rerank_positions), len(candidate_ids),
             )
             return merged
         rescored = [
