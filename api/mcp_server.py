@@ -138,9 +138,10 @@ def _make_filters(
     date_from: Optional[str],
     date_to: Optional[str],
     decision_type: Optional[list[str]],
+    judge: Optional[list[str]] = None,
 ) -> Optional[_m.Filters]:
     if not any([court, legal_domain, is_auj is not None,
-                date_from, date_to, decision_type]):
+                date_from, date_to, decision_type, judge]):
         return None
     return _m.Filters(
         court=court,
@@ -149,6 +150,7 @@ def _make_filters(
         date_from=date.fromisoformat(date_from) if date_from else None,
         date_to=date.fromisoformat(date_to) if date_to else None,
         decision_type=decision_type,
+        judge=judge,
     )
 
 
@@ -177,6 +179,7 @@ async def search(
     legal_domain: Optional[str] = None,
     is_auj: Optional[bool] = None,
     decision_type: Optional[list[str]] = None,
+    judge: Optional[list[str]] = None,
 ) -> list[dict]:
     """Search Portuguese court decisions (DGSI) using hybrid search (3 vector columns + FTS fused with RRF).
 
@@ -212,9 +215,11 @@ async def search(
         is_auj: true = only binding precedents (Acórdão de Uniformização /
                 Fixação de Jurisprudência); false = exclude binding precedents.
         decision_type: Filter by decision type e.g. ["Acórdão", "Sentença", "Despacho"].
+        judge: Judge rapporteur (relator) names, ANY-of, e.g. ["GARCIA CALEJO"].
+               Call find_judges first to get the names as the corpus spells them.
     """
     limit = max(1, min(limit, 50))
-    filters = _make_filters(court, legal_domain, is_auj, date_from, date_to, decision_type)
+    filters = _make_filters(court, legal_domain, is_auj, date_from, date_to, decision_type, judge)
     overfetch = limit * 4
     weights_obj = _m.SearchWeights()
     vec_fields = _m._enabled_vector_fields(weights_obj)
@@ -336,6 +341,43 @@ async def search_by_legislation(
         "offset": resp.offset,
         "results": _serialise(resp.results),
     }
+
+
+@mcp.tool
+async def find_judges(q: str, court: Optional[list[str]] = None, limit: int = 10) -> list[dict]:
+    """Find judge rapporteurs (relatores) by part of their name.
+
+    Matching ignores case and accents, and every word must start a word of the
+    name ("calejo", "j correia"). Each result has the `name` to pass as the
+    `judge` filter of search / list_judge_decisions, the number of decisions,
+    and the courts where the judge was rapporteur. Abbreviated spellings
+    ("E. Sequeira") are separate results; pass several names to cover them.
+    """
+    resp = await _m.get_judges(q=q, court=court, limit=max(1, min(limit, 50)))
+    return [r.model_dump(mode="json") for r in resp.results]
+
+
+@mcp.tool
+async def list_judge_decisions(
+    judge: list[str],
+    limit: int = 20,
+    offset: int = 0,
+    court: Optional[list[str]] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    is_auj: Optional[bool] = None,
+) -> list[dict]:
+    """List a judge rapporteur's decisions, newest first, without a search query.
+
+    Use search with the `judge` filter instead when the user also names a topic.
+    """
+    if not judge:
+        return []
+    filters = _make_filters(court, None, is_auj, date_from, date_to, None, judge)
+    resp = await _m.browse(_m.BrowseRequest(
+        filters=filters, limit=max(1, min(limit, 100)), offset=max(0, offset),
+    ))
+    return _serialise(resp.results)
 
 
 @mcp.tool

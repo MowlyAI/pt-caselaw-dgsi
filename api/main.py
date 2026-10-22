@@ -31,6 +31,7 @@ from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query, Re
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
+from api.judges import judge_key, query_tokens
 from api.legal_areas import CANONICAL_AREAS, resolve_legal_areas
 
 # Use absolute path so the server works regardless of the working directory
@@ -488,11 +489,30 @@ class Filters(BaseModel):
         description="Upper bound on the disability degree, inclusive.",
         examples=[30],
     )
+    judge: Optional[list[str]] = Field(
+        None, max_length=20,
+        description=(
+            "Restrict to decisions whose judge rapporteur (relator) is one of "
+            "these names (ANY-of). Matching ignores case, accents and "
+            "punctuation, so `José Correia` also finds `JOSE CORREIA`; names "
+            "must otherwise be complete. Use `GET /judges` to find the names "
+            "present in the corpus."
+        ),
+        examples=[["GARCIA CALEJO"]],
+    )
 
     @field_validator("date_from", "date_to", mode="before")
     @classmethod
     def _coerce_date(cls, v: object) -> object:
         return _parse_flexible_date(v)
+
+    @field_validator("judge")
+    @classmethod
+    def _judge_keys(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return None
+        keys = list(dict.fromkeys(k for k in (judge_key(name) for name in v) if k))
+        return keys or None
 
 
 class SearchWeights(BaseModel):
@@ -907,7 +927,7 @@ class SearchResponse(BaseModel):
         examples=[["embedding", "embedding_context", "embedding_ratio", "fts"]],
     )
     mode: str = Field(
-        description="Search mode that produced the response. Currently always `hybrid`.",
+        description="Search mode that produced the response: `hybrid`, or `browse` for `POST /browse`.",
         examples=["hybrid"],
     )
     filters: Optional[Filters] = Field(
@@ -984,6 +1004,10 @@ def _build_filters(
     if clause:
         clauses.append(clause)
         params.extend(points_params)
+    clause, judge_params, idx = _judge_clause(f, idx, prefix)
+    if clause:
+        clauses.append(clause)
+        params.extend(judge_params)
     return " AND ".join(clauses), params
 
 
@@ -1009,6 +1033,22 @@ def _disability_points_clause(
         f"WHERE {' AND '.join(conditions)})",
         params,
         idx,
+    )
+
+
+def _judge_clause(
+    f: Filters, idx: int, prefix: str
+) -> tuple[str, list[Any], int]:
+    """`judge` as a semi-join on document_judges
+    (migrations/20261021_document_judges.sql). Filters normalises the names
+    to judge_key."""
+    if not f.judge:
+        return "", [], idx
+    return (
+        f"{prefix}doc_id IN (SELECT doc_id FROM document_judges "
+        f"WHERE judge_key = ANY(${idx}::text[]))",
+        [f.judge],
+        idx + 1,
     )
 
 
@@ -1328,11 +1368,15 @@ async def _vector_query(emb_lit: str, field: str, limit: int,
     if filt_sql:
         where += f" AND {filt_sql}"
     limit_idx = 2 + len(filt_params)
+    # One judge has at most a few thousand decisions: rank them exactly. The
+    # HNSW walk is capped (HNSW_MAX_SCAN_TUPLES) and would return few of them.
+    # "+ 0" keeps the planner from ordering by the HNSW index.
+    exact = " + 0" if filters is not None and filters.judge else ""
     sql = (
         f"SELECT doc_id, (1 - ({field} <=> $1::halfvec))::real AS sim "
         f"FROM documents "
         f"WHERE {where} "
-        f"ORDER BY {field} <=> $1::halfvec "
+        f"ORDER BY ({field} <=> $1::halfvec){exact} "
         f"LIMIT ${limit_idx}"
     )
     async with db_pool.acquire() as conn:
@@ -2161,6 +2205,119 @@ async def get_filters(
     return {**payload, "cached": False, "cache_age_seconds": 0}
 
 
+class JudgeCourt(BaseModel):
+    court_short: Optional[str] = Field(description="Court code, as in the `court` filter.")
+    count: int = Field(description="Decisions of this judge as rapporteur in that court.")
+
+
+class JudgeSuggestion(BaseModel):
+    """One judge rapporteur, with every spelling that shares its `key`."""
+    name: str = Field(description="Most frequent spelling. Pass it in `filters.judge`.")
+    key: str = Field(description="Accent-, case- and punctuation-insensitive form used for matching.")
+    count: int = Field(description="Decisions with this judge as rapporteur (duplicates excluded).")
+    courts: list[JudgeCourt] = Field(description="Courts where the judge was rapporteur, most decisions first.")
+    first_date: Optional[date] = None
+    last_date: Optional[date] = None
+
+
+class JudgesResponse(BaseModel):
+    count: int
+    results: list[JudgeSuggestion]
+
+
+@app.get(
+    "/judges",
+    response_model=JudgesResponse,
+    tags=["info"],
+    summary="Autocomplete judge rapporteurs (relatores)",
+    description=(
+        "Judges whose name contains every word of `q` as the start of a word, "
+        "ignoring case and accents (`calejo`, `j correia`). Spellings that "
+        "differ only in case or accents are grouped. Abbreviated forms "
+        "(`E. Sequeira` / `Eugénio Sequeira`) stay separate entries; pass "
+        "several names in `filters.judge` to search them together. Sorted by "
+        "number of decisions."
+    ),
+)
+async def get_judges(
+    q: str = Query(..., min_length=2, max_length=100, description="Part of the judge's name."),
+    court: Optional[list[str]] = Query(None, description="Only count decisions of these courts."),
+    limit: int = Query(10, ge=1, le=50),
+):
+    tokens = query_tokens(q)
+    if not tokens:
+        return JudgesResponse(count=0, results=[])
+    # Tokens are A–Z/0–9 words (judge_key), so LIKE has nothing to escape.
+    conditions = [f"(' ' || judge_key) LIKE ${i + 1}" for i in range(len(tokens))]
+    params: list[Any] = [f"% {token}%" for token in tokens]
+    if court:
+        conditions.append(f"court_short = ANY(${len(params) + 1}::text[])")
+        params.append(court)
+    sql = (
+        "SELECT judge_key, court_short, judge_name, doc_count, first_date, last_date "
+        "  FROM judge_directory "
+        f" WHERE {' AND '.join(conditions)}"
+    )
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    grouped: dict[str, list[asyncpg.Record]] = {}
+    for row in rows:
+        grouped.setdefault(row["judge_key"], []).append(row)
+    results = []
+    for key, court_rows in grouped.items():
+        court_rows.sort(key=lambda r: r["doc_count"], reverse=True)
+        firsts = [r["first_date"] for r in court_rows if r["first_date"]]
+        lasts = [r["last_date"] for r in court_rows if r["last_date"]]
+        results.append(JudgeSuggestion(
+            name=court_rows[0]["judge_name"],
+            key=key,
+            count=sum(r["doc_count"] for r in court_rows),
+            courts=[JudgeCourt(court_short=r["court_short"], count=r["doc_count"]) for r in court_rows],
+            first_date=min(firsts) if firsts else None,
+            last_date=max(lasts) if lasts else None,
+        ))
+    results.sort(key=lambda r: (-r.count, r.key))
+    return JudgesResponse(count=min(len(results), limit), results=results[:limit])
+
+
+class BrowseRequest(BaseModel):
+    """Request body for `POST /browse`."""
+    filters: Filters = Field(description="Filters to list; `judge` is required.")
+    limit: int = Field(20, ge=1, le=100)
+    offset: int = Field(0, ge=0, le=10000)
+
+
+@app.post(
+    "/browse",
+    response_model=SearchResponse,
+    tags=["search"],
+    summary="List a judge's decisions by date, without a query",
+    description=(
+        "Returns the decisions matching `filters`, newest first. Requires "
+        "`filters.judge` so the listing stays small; combine it with court, "
+        "dates, AUJ and the other filters. Use `offset` to page."
+    ),
+)
+async def browse(req: BrowseRequest):
+    if not req.filters.judge:
+        raise HTTPException(400, "Provide `filters.judge` to browse without a query")
+    filt_sql, filt_params = _build_filters(req.filters, start_idx=1)
+    limit_idx = len(filt_params) + 1
+    sql = (
+        "SELECT doc_id FROM documents "
+        f"WHERE {filt_sql} "
+        "ORDER BY decision_date DESC NULLS LAST, doc_id "
+        f"LIMIT ${limit_idx} OFFSET ${limit_idx + 1}"
+    )
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(sql, *filt_params, req.limit, req.offset)
+    ids = [r["doc_id"] for r in rows]
+    docs = await _fetch_docs(ids)
+    results = [SearchResult(**docs[doc_id]) for doc_id in ids if doc_id in docs]
+    return SearchResponse(count=len(results), sources_used=[], mode="browse",
+                          filters=req.filters, results=results)
+
+
 @app.get(
     "/document/{doc_id}",
     tags=["documents"],
@@ -2567,6 +2724,10 @@ def _build_document_json_filters(
     if clause:
         clauses.append(clause)
         params.extend(points_params)
+    clause, judge_params, idx = _judge_clause(f, idx, prefix)
+    if clause:
+        clauses.append(clause)
+        params.extend(judge_params)
     return " AND ".join(clauses), params, idx
 
 
