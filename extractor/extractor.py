@@ -271,6 +271,15 @@ decision. Every output is a single JSON object that strictly matches the schema 
 - case_type: specific procedural variety ("Revista excepcional", "Recurso Contraordenacional",
   "Processo Especial de Revitalização", …).
 
+## PARECERES DA PGR (Court: Procuradoria-Geral da República)
+These are opinions of the Conselho Consultivo, not judicial decisions. Map them as:
+- process_number: the "Parecer:" value (e.g. "P000062018"); judge_name: the "Relator:".
+- decision_date: "Data da Votação:"; decision_type: "Parecer"; voting: "Tipo de Votação:".
+- court_name: "Procuradoria-Geral da República"; instance_level: "Conselho Consultivo".
+- decision_outcome: the "Posição" of the requesting entity when shown (e.g. HOMOLOGADO),
+  otherwise null. ratio_decidendi: the core of the "Conclusões".
+- legal_descriptors: from "Descritores:". is_jurisprudence_unification: always false.
+
 ## SUBSTANTIVE CONTENT
 - summary: ≤300 words, third-person, in Portuguese. Focus on WHAT the court decided and WHY.
 - legal_question: the single precise question the court had to answer (one sentence).

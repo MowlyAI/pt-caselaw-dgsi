@@ -86,6 +86,15 @@ DATABASES = [
         "short": "JP",
         "approx_count": 7322,
     },
+    # Not a court: opinions of the PGR Conselho Consultivo, published on DGSI
+    # with the same Domino layout. The extractor maps them as decision_type "Parecer".
+    {
+        "db": "pgrp.nsf",
+        "view_id": "7fc0bd52c6f5cd5a802568c0003fb410",
+        "label": "Procuradoria-Geral da República (Conselho Consultivo)",
+        "short": "PGR",
+        "approx_count": 6208,
+    },
 ]
 
 BASE_URL = "https://www.dgsi.pt"
