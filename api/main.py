@@ -958,6 +958,23 @@ NOT_DUPLICATE_DOC_IDS = (
 )
 
 
+# Sources that are not court decisions (PGR pareceres) are searched only when
+# the caller names them in the court filter, so acórdão searches never mix them in.
+NON_COURT_SOURCES = ("PGR",)
+_EXCLUDE_NON_COURT_SQL = (
+    "({col} IS NULL OR {col} NOT IN ("
+    + ", ".join(f"'{c}'" for c in NON_COURT_SOURCES)
+    + "))"
+)
+
+# Anti-join for paths that skip the documents table (idx_documents_non_court).
+NOT_NON_COURT_DOC_IDS = (
+    "NOT IN (SELECT doc_id FROM documents WHERE court_short IN ("
+    + ", ".join(f"'{c}'" for c in NON_COURT_SOURCES)
+    + "))"
+)
+
+
 def _build_filters(
     f: Optional[Filters], start_idx: int = 1, alias: str = ""
 ) -> tuple[str, list[Any]]:
@@ -968,8 +985,10 @@ def _build_filters(
     prefix = f"{alias}." if alias else ""
     clauses: list[str] = [f"{prefix}duplicate_of IS NULL"]
     params: list[Any] = []
+    if f is None or not f.court:
+        clauses.append(_EXCLUDE_NON_COURT_SQL.format(col=f"{prefix}court_short"))
     if f is None:
-        return clauses[0], params
+        return " AND ".join(clauses), params
     idx = start_idx
     if f.court:
         clauses.append(f"{prefix}court_short = ANY(${idx}::text[])")
@@ -1554,7 +1573,7 @@ async def _search_fts(q: str, limit: int,
     else:
         # No user filters: skip the per-match documents lookup.
         core_from = "document_fts_core c"
-        core_filter = f"c.doc_id {NOT_DUPLICATE_DOC_IDS}"
+        core_filter = f"c.doc_id {NOT_DUPLICATE_DOC_IDS} AND c.doc_id {NOT_NON_COURT_DOC_IDS}"
     core_sql = (
         "SELECT c.doc_id, ts_rank_cd(c.fts_core, websearch_to_tsquery('portuguese', $1))::real AS rank "
         f"  FROM {core_from} "
@@ -2672,9 +2691,9 @@ def _build_citation_filters(
     f: Optional[Filters], start_idx: int, alias: str = "c"
 ) -> tuple[str, list[Any], int]:
     """Build filters that are denormalized onto the citation lookup table."""
-    if f is None:
-        return "", [], start_idx
     prefix = f"{alias}."
+    if f is None:
+        return _EXCLUDE_NON_COURT_SQL.format(col=f"{prefix}court_short"), [], start_idx
     clauses: list[str] = []
     params: list[Any] = []
     idx = start_idx
@@ -2682,6 +2701,8 @@ def _build_citation_filters(
         clauses.append(f"{prefix}court_short = ANY(${idx}::text[])")
         params.append(f.court)
         idx += 1
+    else:
+        clauses.append(_EXCLUDE_NON_COURT_SQL.format(col=f"{prefix}court_short"))
     if f.legal_domain:
         clause, param = _legal_domain_clause(f"{prefix}legal_domain", f.legal_domain, idx)
         clauses.append(clause)

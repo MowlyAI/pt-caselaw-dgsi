@@ -96,3 +96,24 @@ class BrowseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NonCourtSourceTests(unittest.TestCase):
+    """PGR pareceres only appear when the caller asks for them by court."""
+
+    def test_unfiltered_searches_leave_pareceres_out(self):
+        for filters in (None, main.Filters()):
+            sql, params = main._build_filters(filters, start_idx=1, alias="d")
+            self.assertIn("d.court_short NOT IN ('PGR')", sql)
+            self.assertEqual(params, [])
+        sql, _, idx = main._build_citation_filters(None, 3)
+        self.assertIn("c.court_short NOT IN ('PGR')", sql)
+        self.assertEqual(idx, 3)
+
+    def test_naming_the_court_returns_pareceres(self):
+        sql, params = main._build_filters(main.Filters(court=["PGR"]), start_idx=1)
+        self.assertNotIn("NOT IN ('PGR')", sql)
+        self.assertEqual(params, [["PGR"]])
+        sql, params, _ = main._build_citation_filters(main.Filters(court=["PGR"]), 1)
+        self.assertNotIn("NOT IN ('PGR')", sql)
+
