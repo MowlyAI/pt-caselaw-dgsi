@@ -43,6 +43,9 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 # Must match the model that produced the stored vectors (verified 2026-10).
 EMBEDDING_MODEL = "google/gemini-embedding-001"
+# Same model on Google Vertex, used when the default (AI Studio BYOK) route fails.
+EMBEDDING_FALLBACK_PROVIDER = {"only": ["google-vertex"], "allow_fallbacks": False}
+EMBEDDING_FALLBACK_STATUSES = {402, 429, 500, 502, 503, 504}
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
 EMBEDDING_MAX_RETRIES = int(os.getenv("EMBEDDING_MAX_RETRIES", "4"))
 # Fast model for short legislation-query canonicalization/selection calls.
@@ -1082,6 +1085,25 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         delay = min(float(retry_after), 8.0) if retry_after else min(2.0 * (2**attempt), 8.0)
         await asyncio.sleep(delay)
     assert resp is not None
+    if resp.status_code in EMBEDDING_FALLBACK_STATUSES:
+        # The default route uses Mowly's AI Studio key (BYOK). When it is out of
+        # credits, capped or rate limited, the same model on Google Vertex gives
+        # identical vectors, billed to OpenRouter credits (2026-10-27 incident).
+        logger.warning(
+            "embed_texts: HTTP %d on default route, retrying on Google Vertex", resp.status_code
+        )
+        try:
+            fallback = await http_client.post(
+                f"{OPENROUTER_BASE}/embeddings",
+                json={**payload, "provider": EMBEDDING_FALLBACK_PROVIDER},
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            )
+            if fallback.status_code == 200 and "data" in fallback.json():
+                resp = fallback
+            else:
+                logger.error("embed_texts: Vertex fallback HTTP %d", fallback.status_code)
+        except (httpx.RequestError, ValueError) as exc:
+            logger.error("embed_texts: Vertex fallback failed: %s", exc)
     body = resp.json()
     if resp.status_code != 200:
         logger.error("embed_query: HTTP %d — %s", resp.status_code, resp.text[:500])
