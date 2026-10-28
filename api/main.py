@@ -2370,7 +2370,9 @@ async def get_document(
 # Cited decision resolution
 # ---------------------------------------------------------------------------
 
-from api.citations import PROCESS_KEY_SQL, court_code, pick_candidate, process_key  # noqa: E402
+from api.citations import (  # noqa: E402
+    PROCESS_KEY_SQL, court_code, dgsi_unid, pick_by_head, pick_candidate, process_key,
+)
 
 
 class CitedDecision(BaseModel):
@@ -2411,31 +2413,71 @@ class ResolveCitationsResponse(BaseModel):
         "when it is in the corpus (null otherwise). Matching is on the "
         "process number with whitespace removed and case ignored; court and "
         "date pick between documents sharing a number, and an ambiguous "
-        "match returns null rather than a guess. Duplicates are skipped."
+        "match returns null rather than a guess. Duplicates are skipped. "
+        "When the exact number misses, documents of the cited court on the "
+        "cited date are matched by serial number and year, which tolerates "
+        "leading zeros, a missing or mistyped check digit and a different "
+        "suffix. A dgsi.pt link written as the number resolves to its document."
     ),
 )
 async def resolve_citations(req: ResolveCitationsRequest):
     keys = [process_key(c.process_number) for c in req.citations]
+    unids = [dgsi_unid(c.process_number) for c in req.citations]
+    courts = [court_code(c.court_abbreviation, c.court_name) for c in req.citations]
     wanted = sorted({k for k in keys if k})
     by_key: dict[str, list[dict]] = {}
-    if wanted:
-        async with db_pool.acquire() as conn:
+    by_unid: dict[str, dict] = {}
+    by_day: dict[tuple[str, date], list[dict]] = {}
+    async with db_pool.acquire() as conn:
+        if wanted:
             rows = await conn.fetch(
                 f"SELECT doc_id, url, court_short, process_number, decision_date, "
                 f"{PROCESS_KEY_SQL} AS key FROM documents "
                 f"WHERE {PROCESS_KEY_SQL} = ANY($1::text[]) AND duplicate_of IS NULL",
                 wanted,
             )
-        for r in rows:
-            by_key.setdefault(r["key"], []).append(dict(r))
+            for r in rows:
+                by_key.setdefault(r["key"], []).append(dict(r))
+
+        wanted_unids = sorted({u for u in unids if u})
+        if wanted_unids:
+            rows = await conn.fetch(
+                "SELECT doc_id, url, court_short, process_number, decision_date FROM documents "
+                "WHERE doc_id = ANY($1::text[])",
+                wanted_unids,
+            )
+            by_unid = {r["doc_id"]: dict(r) for r in rows}
+
+        # Fallback for numbers written differently from the corpus: only with an
+        # exact court and date, so the candidate set stays small and specific.
+        days = sorted({
+            (court, day)
+            for key, court, cite in zip(keys, courts, req.citations)
+            if key and court and not by_key.get(key)
+            and (day := _parse_cited_date(cite.decision_date))
+        })
+        if days:
+            rows = await conn.fetch(
+                f"SELECT doc_id, url, court_short, process_number, decision_date, "
+                f"{PROCESS_KEY_SQL} AS key FROM documents "
+                f"WHERE (court_short, decision_date) IN "
+                f"(SELECT * FROM unnest($1::text[], $2::date[])) AND duplicate_of IS NULL",
+                [c for c, _ in days], [d for _, d in days],
+            )
+            for r in rows:
+                by_day.setdefault((r["court_short"], r["decision_date"]), []).append(dict(r))
 
     results: list[ResolvedCitation] = []
-    for i, (cite, key) in enumerate(zip(req.citations, keys)):
-        match = pick_candidate(
-            by_key.get(key, []) if key else [],
-            court_code(cite.court_abbreviation, cite.court_name),
-            cite.decision_date,
-        )
+    for i, (cite, key, unid, court) in enumerate(zip(req.citations, keys, unids, courts)):
+        match = by_unid.get(unid) if unid else None
+        if not match:
+            match = pick_candidate(
+                by_key.get(key, []) if key else [], court, cite.decision_date,
+            )
+        if not match and key and court:
+            day = _parse_cited_date(cite.decision_date)
+            if day:
+                match = pick_by_head(by_day.get((court, day), []), key)
         if match:
             results.append(ResolvedCitation(
                 index=i,
@@ -2448,6 +2490,15 @@ async def resolve_citations(req: ResolveCitationsRequest):
         else:
             results.append(ResolvedCitation(index=i))
     return ResolveCitationsResponse(results=results)
+
+
+def _parse_cited_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
