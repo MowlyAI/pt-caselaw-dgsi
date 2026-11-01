@@ -18,6 +18,8 @@ import secrets
 import time
 import unicodedata
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import date
 
 logger = logging.getLogger(__name__)
@@ -47,16 +49,20 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
 EMBEDDING_MAX_RETRIES = int(os.getenv("EMBEDDING_MAX_RETRIES", "4"))
 # Fast model for short legislation-query canonicalization/selection calls.
 LLM_MODEL = "google/gemini-3.1-flash-lite"
-# Tried in order. OpenRouter's /rerank has no `models` fallback list and Voyage
-# has a single provider there, so the fallback lives here (issue #8: Voyage
-# returned 429 for every request from 2026-10-10).
-RERANK_MODELS: tuple[str, ...] = ("voyageai/rerank-2.5", "cohere/rerank-v3.5")
-RERANK_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-RERANK_MAX_ATTEMPTS = 3  # per model
-RERANK_BACKOFF_BASE_SECONDS = 0.5  # 0.5s, 1s between attempts
-RERANK_MAX_RETRY_DELAY_SECONDS = 2.0
-# A model still answering 429 after its retries is skipped for this long (or
-# its Retry-After, up to the max) so requests go straight to the next model.
+# Rerank routes, tried in order with ONE attempt each and no waits, so a busy
+# provider costs one fast failure instead of seconds of retries (issue #16).
+# Voyage's own API comes first when VOYAGE_API_KEY is set: through OpenRouter
+# Voyage has a single shared provider that answers 429 several times a day
+# (issue #8), and OpenRouter BYOK sends Voyage keys to MongoDB's endpoint,
+# which rejects dashboard.voyageai.com keys with 403 (2026-11-01).
+# Cohere stays last: it ranked AUJs worse (hit@5 0.73 vs 0.81, 2026-11-01).
+VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
+VOYAGE_RERANK_URL = "https://api.voyageai.com/v1/rerank"
+VOYAGE_RERANK_MODEL = "rerank-2.5"
+OPENROUTER_RERANK_MODELS: tuple[str, ...] = ("voyageai/rerank-2.5", "cohere/rerank-v3.5")
+# A route answering 429 is skipped for this long (or its Retry-After, up to
+# the max) so requests go straight to the next route; a rejected key (401/403)
+# is skipped for the max.
 RERANK_COOLDOWN_SECONDS = 60.0
 RERANK_MAX_COOLDOWN_SECONDS = 600.0
 # Reranker defaults chosen with scripts/evaluate_search_quality.py (2026-10):
@@ -68,7 +74,8 @@ RERANK_WEIGHT = float(os.getenv("RERANK_WEIGHT", "20.0"))
 # hits are kept out of the top 5. Off by default: it blocked the reranker from
 # promoting strong vector-only matches (17 cases improved, 8 lost one result).
 RERANK_LEXICAL_GUARD = False
-RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "30"))
+# Per route. Worst case is one timeout per route, never a retry.
+RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "15"))
 LEGISLATION_RERANK_WEIGHT = float(os.getenv("LEGISLATION_RERANK_WEIGHT", "4.0"))
 # gemini-3.1-pro-preview gave identical results on the semantic legislation
 # benchmark cases but took ~16s p50 vs ~3.3s (2026-10).
@@ -933,6 +940,14 @@ class SearchResponse(BaseModel):
     filters: Optional[Filters] = Field(
         None, description="Filters as received in the request, echoed back.",
     )
+    reranked_by: Optional[str] = Field(
+        None,
+        description=(
+            "Rerank route that ordered the results, e.g. `voyage/rerank-2.5`, "
+            "`openrouter/voyageai/rerank-2.5` or `openrouter/cohere/rerank-v3.5`. "
+            "`null` when no reranker answered and the retrieval order was kept."
+        ),
+    )
     results: list[SearchResult] = Field(
         description="Ranked results, sorted by `hybrid_score` descending.",
     )
@@ -1655,7 +1670,38 @@ def _rerank_document_text(doc: dict[str, Any]) -> str:
     return "\n".join(fields)[:12000]
 
 
+@dataclass(frozen=True)
+class _RerankRoute:
+    name: str  # reported as `reranked_by`
+    url: str
+    model: str
+    api_key: Optional[str]
+    voyage_format: bool  # Voyage's own API: `top_k` in, `data` out
+
+
+def _rerank_routes() -> list[_RerankRoute]:
+    routes = []
+    if VOYAGE_API_KEY:
+        routes.append(_RerankRoute(
+            f"voyage/{VOYAGE_RERANK_MODEL}", VOYAGE_RERANK_URL,
+            VOYAGE_RERANK_MODEL, VOYAGE_API_KEY, True,
+        ))
+    if OPENROUTER_API_KEY:
+        routes.extend(
+            _RerankRoute(
+                f"openrouter/{model}", f"{OPENROUTER_BASE}/rerank",
+                model, OPENROUTER_API_KEY, False,
+            )
+            for model in OPENROUTER_RERANK_MODELS
+        )
+    return routes
+
+
 _rerank_cooldown_until: dict[str, float] = {}
+# Last outcome per route, for /health (never holds keys or response bodies).
+_rerank_route_status: dict[str, dict[str, Any]] = {}
+# Route that reranked the current request, read back by the search endpoints.
+_reranked_by: ContextVar[Optional[str]] = ContextVar("reranked_by", default=None)
 
 
 def _retry_after_seconds(response: httpx.Response) -> Optional[float]:
@@ -1666,85 +1712,110 @@ def _retry_after_seconds(response: httpx.Response) -> Optional[float]:
     return value if value >= 0 else None
 
 
+def _record_route(route: _RerankRoute, outcome: str) -> None:
+    _rerank_route_status[route.name] = {"last_outcome": outcome, "at": time.time()}
+
+
+def _cool_down(route: _RerankRoute, seconds: float) -> None:
+    _rerank_cooldown_until[route.name] = time.monotonic() + seconds
+
+
 async def _post_rerank(
     query: str, documents: list[str]
 ) -> Optional[tuple[str, list[dict[str, Any]]]]:
-    """Rerank with the first model in ``RERANK_MODELS`` that answers.
+    """Rerank with the first route that answers, one attempt per route.
 
-    Retries 429/5xx and network errors with exponential backoff, then moves
-    to the next model. Returns ``(model, results)`` or ``None`` when every
-    model failed or is cooling down after a 429.
+    Returns ``(route name, results)`` with OpenRouter-style results
+    (``index``, ``relevance_score``, best first) or ``None`` when every route
+    failed or is cooling down.
     """
-    for model in RERANK_MODELS:
-        if _rerank_cooldown_until.get(model, 0.0) > time.monotonic():
-            logger.info("rerank: %s cooling down after 429; skipping", model)
+    routes = _rerank_routes()
+    for position, route in enumerate(routes):
+        if _rerank_cooldown_until.get(route.name, 0.0) > time.monotonic():
             continue
-        response: Optional[httpx.Response] = None
-        for attempt in range(RERANK_MAX_ATTEMPTS):
-            last_attempt = attempt == RERANK_MAX_ATTEMPTS - 1
-            delay = min(
-                RERANK_BACKOFF_BASE_SECONDS * (2**attempt),
-                RERANK_MAX_RETRY_DELAY_SECONDS,
+        body: dict[str, Any] = {"model": route.model, "query": query, "documents": documents}
+        if route.voyage_format:
+            body["top_k"] = len(documents)
+        else:
+            body["top_n"] = len(documents)
+        headers = {
+            "Authorization": f"Bearer {route.api_key}",
+            "Content-Type": "application/json",
+        }
+        if not route.voyage_format:
+            headers["HTTP-Referer"] = "https://github.com/pt-caselaw-dgsi"
+            headers["X-Title"] = "pt-caselaw-dgsi"
+        try:
+            response = await http_client.post(
+                route.url, headers=headers, json=body, timeout=RERANK_TIMEOUT,
             )
-            try:
-                response = await http_client.post(
-                    f"{OPENROUTER_BASE}/rerank",
-                    headers={
-                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "https://github.com/pt-caselaw-dgsi",
-                        "X-Title": "pt-caselaw-dgsi",
-                    },
-                    json={
-                        "model": model,
-                        "query": query,
-                        "documents": documents,
-                        "top_n": len(documents),
-                    },
-                    timeout=RERANK_TIMEOUT,
-                )
-            except httpx.RequestError as exc:
-                response = None
-                if last_attempt:
-                    logger.warning("rerank: %s network error: %s", model, exc)
-                    break
-                await asyncio.sleep(delay)
-                continue
-            if response.status_code not in RERANK_RETRY_STATUSES or last_attempt:
-                break
-            retry_after = _retry_after_seconds(response)
-            if retry_after is not None:
-                delay = min(retry_after, RERANK_MAX_RETRY_DELAY_SECONDS)
-            await asyncio.sleep(delay)
-
-        if response is None:
+        except httpx.RequestError as exc:
+            _record_route(route, f"network error: {type(exc).__name__}")
+            logger.warning("rerank: %s network error: %s", route.name, type(exc).__name__)
             continue
+
         if response.status_code == 200:
             try:
-                results = response.json().get("results")
+                payload = response.json()
             except ValueError:
-                results = None
+                payload = {}
+            results = payload.get("data" if route.voyage_format else "results")
+            if isinstance(results, list) and route.voyage_format:
+                # Voyage documents `data` as best first; sort anyway so both
+                # formats mean the same thing to the caller.
+                results = sorted(
+                    (item for item in results if isinstance(item, dict)),
+                    key=lambda item: -float(item.get("relevance_score") or 0.0),
+                )
             if isinstance(results, list):
-                if model != RERANK_MODELS[0]:
-                    logger.info("rerank: served by fallback model %s", model)
-                return model, results
-            logger.warning("rerank: %s returned no results list", model)
+                _record_route(route, "ok")
+                if position > 0:
+                    logger.warning("rerank: served by fallback route %s", route.name)
+                return route.name, results
+            _record_route(route, "no results list")
+            logger.warning("rerank: %s returned no results list", route.name)
             continue
+
+        _record_route(route, f"HTTP {response.status_code}")
         if response.status_code == 429:
             cooldown = min(
                 max(_retry_after_seconds(response) or 0.0, RERANK_COOLDOWN_SECONDS),
                 RERANK_MAX_COOLDOWN_SECONDS,
             )
-            _rerank_cooldown_until[model] = time.monotonic() + cooldown
+            _cool_down(route, cooldown)
             logger.warning(
-                "rerank: %s rate limited (429); skipping it for %.0fs", model, cooldown
+                "rerank: %s rate limited (429); skipping it for %.0fs", route.name, cooldown
+            )
+        elif response.status_code in (401, 403):
+            _cool_down(route, RERANK_MAX_COOLDOWN_SECONDS)
+            logger.warning(
+                "rerank: %s rejected the API key (HTTP %d); skipping it for %.0fs",
+                route.name, response.status_code, RERANK_MAX_COOLDOWN_SECONDS,
             )
         else:
             logger.warning(
                 "rerank: %s HTTP %d: %s",
-                model, response.status_code, response.text[:200],
+                route.name, response.status_code, response.text[:200],
             )
+    logger.warning("rerank: no route answered; keeping retrieval order")
     return None
+
+
+def rerank_health() -> dict[str, Any]:
+    """Which rerank routes are configured, cooling down, and how they last did."""
+    now = time.monotonic()
+    return {
+        "routes": [
+            {
+                "name": route.name,
+                "cooling_down_seconds": max(
+                    0, round(_rerank_cooldown_until.get(route.name, 0.0) - now)
+                ),
+                **_rerank_route_status.get(route.name, {}),
+            }
+            for route in _rerank_routes()
+        ],
+    }
 
 
 async def _rerank_candidates(
@@ -1770,8 +1841,7 @@ async def _rerank_candidates(
     question_only = question_only and bool(semantic_query)
     if (
         effective_weight <= 0
-        or not RERANK_MODELS
-        or not OPENROUTER_API_KEY
+        or not (VOYAGE_API_KEY or OPENROUTER_API_KEY)
         or not http_client
         or len(merged) < 2
     ):
@@ -1808,6 +1878,7 @@ async def _rerank_candidates(
                 model, len(rerank_positions), len(candidate_ids),
             )
             return merged
+        _reranked_by.set(model)
         rescored = [
             (doc_id, (0.0 if question_only else score)
              + effective_weight / (rrf_k + rerank_positions[doc_id]))
@@ -1875,7 +1946,10 @@ async def root():
     description=(
         "Returns `healthy` when the HTTP client is initialised and the "
         "database answers a trivial query within 2 seconds; otherwise "
-        "returns **503** with `status: unhealthy` and the failing component."
+        "returns **503** with `status: unhealthy` and the failing component. "
+        "`rerank` lists the rerank routes in the order they are tried, how "
+        "long each is still skipped after a 429 or a rejected key, and its "
+        "last outcome."
     ),
     responses={503: {"description": "Database unreachable or not initialised."}},
 )
@@ -1888,7 +1962,7 @@ async def health():
     except Exception as exc:
         logger.warning("health check: database unreachable: %s", exc)
         return JSONResponse({"status": "unhealthy", "reason": "database"}, status_code=503)
-    return {"status": "healthy"}
+    return {"status": "healthy", "rerank": rerank_health()}
 
 
 STATS_CACHE_TTL = int(os.getenv("STATS_CACHE_TTL", "600"))  # seconds
@@ -2046,6 +2120,7 @@ async def search_hybrid(
 ):
     """Hybrid search across all 3 vector columns plus full-text search,
     fused with weighted Reciprocal Rank Fusion. See the OpenAPI description."""
+    _reranked_by.set(None)
     vec_fields = _enabled_vector_fields(req.weights)
     use_fts = req.weights.fts > 0
     if not vec_fields and not use_fts:
@@ -2124,7 +2199,8 @@ async def search_hybrid(
     sources_used = [*vec_fields] + (["fts"] if use_fts else [])
     return SearchResponse(query_semantic=sem_q, query_keywords=kw_q,
                           count=len(results), sources_used=sources_used,
-                          mode="hybrid", filters=effective_filters, results=results)
+                          mode="hybrid", filters=effective_filters,
+                          reranked_by=_reranked_by.get(), results=results)
 
 
 
@@ -3065,6 +3141,14 @@ class LegislationSearchResponse(BaseModel):
     )
     match: str = Field(description="Match mode used: `any` or `all`.")
     filters: Optional[Filters] = Field(None, description="Filters as received.")
+    reranked_by: Optional[str] = Field(
+        None,
+        description=(
+            "Rerank route that ordered the results, e.g. `voyage/rerank-2.5`, "
+            "`openrouter/voyageai/rerank-2.5` or `openrouter/cohere/rerank-v3.5`. "
+            "`null` when no reranker answered and the retrieval order was kept."
+        ),
+    )
     results: list[SearchResult] = Field(
         description="Matching documents ordered by substantive relevance.",
     )
@@ -3122,6 +3206,14 @@ class LegislationSemanticSearchResponse(BaseModel):
     offset: int
     query: str
     candidates: list[LegislationSemanticCandidate]
+    reranked_by: Optional[str] = Field(
+        None,
+        description=(
+            "Rerank route that ordered the results, e.g. `voyage/rerank-2.5`, "
+            "`openrouter/voyageai/rerank-2.5` or `openrouter/cohere/rerank-v3.5`. "
+            "`null` when no reranker answered and the retrieval order was kept."
+        ),
+    )
     results: list[SearchResult]
 
 
@@ -3290,6 +3382,7 @@ async def search_legislation(
     query = "Aplicação direta em jurisprudência de " + (
         " e " if req.match == "all" else " ou "
     ).join(f"{law} {article or ''}".strip() for law, article in refs)
+    _reranked_by.set(None)
     ranked_docs = await _rerank_legislation_rows(query, rows)
     results = [SearchResult(**doc) for doc in ranked_docs[:req.limit]]
 
@@ -3299,6 +3392,7 @@ async def search_legislation(
         articles_searched=normalized,
         match=req.match,
         filters=effective_filters,
+        reranked_by=_reranked_by.get(),
         results=results,
     )
 
@@ -3444,6 +3538,7 @@ async def search_legislation_semantic(
             "try adding filters (courts, date range) or narrowing the query.",
         ) from exc
 
+    _reranked_by.set(None)
     ranked_docs = await _rerank_legislation_rows(req.q, rows)
     results = [SearchResult(**doc) for doc in ranked_docs[:req.limit]]
 
@@ -3452,5 +3547,6 @@ async def search_legislation_semantic(
         offset=req.offset,
         query=req.q,
         candidates=candidate_models,
+        reranked_by=_reranked_by.get(),
         results=results,
     )
